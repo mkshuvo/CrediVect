@@ -1,0 +1,9 @@
+pydantic>=2.10.6
+lightgbm>=4.5.0
+shap>=0.46.0
+scikit-learn>=1.6.1
+numpy>=2.0.0
+scipy>=1.14.0
+grpcio>=1.70.0
+grpcio-tools>=1.70.0
+protobuf>=5.29.3

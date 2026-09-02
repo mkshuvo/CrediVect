@@ -1,0 +1,80 @@
+syntax = "proto3";
+
+package credivect.scoring.v1;
+
+option go_package = "credivect/services/core/internal/proto/scoring/v1;scoringv1";
+
+service ScoringService {
+  rpc CalculateRisk (CalculateRiskRequest) returns (CalculateRiskResponse);
+  rpc HealthCheck (HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+message CalculateRiskRequest {
+  string application_id = 1;
+  string applicant_id = 2;
+  
+  // Financial inputs in integer minor units (USD Cents) - NO FLOATS
+  int64 requested_amount_cents = 3;
+  int64 monthly_income_cents = 4;
+  string currency_code = 5;
+  int32 loan_term_months = 6;
+  string loan_purpose = 7;
+  
+  // Credit Bureau inputs in integer minor units & basis points (1 bp = 0.01%)
+  int64 total_debt_cents = 8;
+  int64 revolving_balance_cents = 9;
+  int64 revolving_limit_cents = 10;
+  int32 revolving_utilization_bps = 11; // e.g. 4250 = 42.50%
+  int32 delinquencies_24m = 12;
+  int32 inquiries_6m = 13;
+  int32 total_trades = 14;
+  int32 open_trades = 15;
+  int32 age_of_oldest_trade_months = 16;
+  bool bankruptcy_flag = 17;
+  int32 bureau_score = 18; // 300 - 850
+}
+
+message CalculateRiskResponse {
+  string application_id = 1;
+  int32 scorecard_points = 2; // 300 - 850
+  
+  // Fixed-point probability of default (0.000000 to 1.000000)
+  string calibrated_pd = 3; 
+  int32 pd_basis_points = 4; // e.g. 480 = 4.80%
+  
+  string risk_tier = 5; // SUPER_PRIME, PRIME, NEAR_PRIME, SUBPRIME, HIGH_RISK
+  string recommended_outcome = 6; // APPROVE, MANUAL_REVIEW, DECLINE
+  
+  // Recommended terms
+  int64 max_approved_limit_cents = 7;
+  int32 recommended_apr_bps = 8; // e.g. 950 = 9.50%
+  
+  // TreeSHAP Local Attributions
+  repeated FeatureAttribution feature_attributions = 9;
+  
+  // Top 4 FCRA Adverse Action Reason Codes (e.g. AA01, AA04)
+  repeated AdverseActionReason adverse_action_reasons = 10;
+  
+  int64 execution_time_micros = 11;
+  string model_version = 12;
+}
+
+message FeatureAttribution {
+  string feature_name = 1;
+  string feature_value = 2;
+  double shap_value = 3; // Game-theoretic log-odds attribution
+  int32 rank = 4; // 1 = highest impact
+}
+
+message AdverseActionReason {
+  string reason_code = 1; // e.g. AA01, AA02
+  string description = 2; // Legal FCRA disclosure text
+  int32 priority_rank = 3; // 1 to 4
+}
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  string status = 1; // SERVING
+  string version = 2;
+}

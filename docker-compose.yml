@@ -1,0 +1,151 @@
+services:
+  ui:
+    build:
+      context: ./services/ui
+      dockerfile: Dockerfile
+    container_name: credivect-ui
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_AUTH_PROVIDER=local
+      - NODE_ENV=production
+    depends_on:
+      - core
+
+  core:
+    build:
+      context: ./services/core
+      dockerfile: Dockerfile
+    container_name: credivect-core
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - AUTH_MODE=local
+      - JWT_SECRET=credivect-super-secure-local-jwt-secret-key-32bytes!
+      - DRAGONFLY_URL=dragonfly:6379
+      - POSTGRES_URL=postgres://credivect_user:credivect_password@postgres:5432/credivect?sslmode=disable
+      - KAFKA_BROKERS=redpanda:9092
+      - TEMPORAL_HOST=temporal:7233
+      - SCORING_GRPC_HOST=scoring:50051
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dragonfly:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+
+  scoring:
+    build:
+      context: ./services/scoring
+      dockerfile: Dockerfile
+    container_name: credivect-scoring
+    restart: unless-stopped
+    ports:
+      - "50051:50051"
+
+  postgres:
+    image: postgres:17-alpine3.21
+    container_name: credivect-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: credivect
+      POSTGRES_USER: credivect_user
+      POSTGRES_PASSWORD: credivect_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U credivect_user -d credivect"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  dragonfly:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:v1.40.1
+    container_name: credivect-dragonfly
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - dragonfly_data:/data
+    command: ["--proactor_threads=4", "--cache_mode=true"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v26.2.1
+    container_name: credivect-redpanda
+    restart: unless-stopped
+    command:
+      - redpanda
+      - start
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
+      - --pandaproxy-addr=0.0.0.0:8082
+      - --advertise-pandaproxy-addr=localhost:8082
+      - --schema-registry-addr=0.0.0.0:8081
+      - --rpc-addr=0.0.0.0:33145
+      - --advertise-rpc-addr=redpanda:33145
+      - --mode=dev-container
+      - --smp=1
+      - --memory=1G
+    ports:
+      - "19092:19092"
+      - "9092:9092"
+      - "9644:9644"
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+
+  redpanda-console:
+    image: docker.redpanda.com/redpandadata/console:v3.11.0
+    container_name: credivect-redpanda-console
+    restart: unless-stopped
+    depends_on:
+      - redpanda
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8080:8080"
+
+  temporal:
+    image: temporalio/auto-setup:1.29.6
+    container_name: credivect-temporal
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=credivect_user
+      - POSTGRES_PWD=credivect_password
+      - POSTGRES_SEEDS=postgres
+    ports:
+      - "7233:7233"
+
+  temporal-ui:
+    image: temporalio/ui:2.53.3
+    container_name: credivect-temporal-ui
+    restart: unless-stopped
+    depends_on:
+      - temporal
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:8233
+    ports:
+      - "8233:8080"
+
+volumes:
+  postgres_data:
+  dragonfly_data:
+  redpanda_data:
