@@ -3,17 +3,28 @@ services:
     build:
       context: ./services/ui
       dockerfile: Dockerfile
+      args:
+        # The rewrite destination is baked into the standalone build at image
+        # build time, so it is a build arg rather than a runtime env. Core
+        # always listens on 8000 inside the compose network.
+        - CORE_ORIGIN=http://core:8000
     container_name: credivect-ui
     restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      # Browser talks to the UI origin only; the Next server proxies /api/v1/*
+      # to CORE_ORIGIN. NEXT_PUBLIC_API_URL stays supported for direct-mode
+      # (no proxy) builds.
+      - CORE_ORIGIN=http://core:8000
       - NEXT_PUBLIC_AUTH_PROVIDER=local
       - NODE_ENV=production
     depends_on:
       - core
 
+  # =========================================================================
+  # 2. GOLANG CORE API GATEWAY, UNDERWRITING SAGA WORKER, EVENT PRODUCER
+  # =========================================================================
   core:
     build:
       context: ./services/core
@@ -21,23 +32,97 @@ services:
     container_name: credivect-core
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "${CORE_HOST_PORT:-8000}:8000"
     environment:
       - PORT=8000
       - AUTH_MODE=local
-      - JWT_SECRET=credivect-super-secure-local-jwt-secret-key-32bytes!
-      - DRAGONFLY_URL=dragonfly:6379
+      - JWT_SECRET=${JWT_SECRET:-credivect-super-secure-local-jwt-secret-key-32bytes!}
+      - SSN_ENCRYPTION_KEY=${SSN_ENCRYPTION_KEY:-01918a2b4c5d7e6f00112233445566778899aabbccddeeff0011223344556677}
+      - DRAGONFLY_URL=redis://dragonfly:6379/0
       - POSTGRES_URL=postgres://credivect_user:credivect_password@postgres:5432/credivect?sslmode=disable
       - KAFKA_BROKERS=redpanda:9092
+      - KAFKA_TOPIC=credivect.application.events
       - TEMPORAL_HOST=temporal:7233
+      - TEMPORAL_NAMESPACE=default
+      - TEMPORAL_TASK_QUEUE=credivect-underwriting
       - SCORING_GRPC_HOST=scoring:50051
+      - SCORING_TIMEOUT=2s
+      - ALLOWED_ORIGINS=http://localhost:3000
+      - RATE_LIMIT_PER_HOUR=${RATE_LIMIT_PER_HOUR:-60}
+      - PSI_BASELINE_FILE=/etc/credivect/models/baseline_deciles.json
+      - BUREAU_LATENCY_MS=${BUREAU_LATENCY_MS:-0}
+      - BUREAU_FAILURE_RATE=${BUREAU_FAILURE_RATE:-0}
+      - BUREAU_NAME=${BUREAU_NAME:-CREDIVECT-SIM}
+      # Identity printed on the FCRA adverse action notice; a real deployment
+      # supplies its own creditor and reporting-agency details.
+      - NOTICE_CREDITOR_NAME=${NOTICE_CREDITOR_NAME:-CrediVect Lending Inc.}
+      - NOTICE_CREDITOR_ADDRESS=${NOTICE_CREDITOR_ADDRESS:-1400 K Street NW Suite 900, Washington, DC 20005}
+      - NOTICE_CRA_ADDRESS=${NOTICE_CRA_ADDRESS:-P.O. Box 105025, Atlanta, GA 30348}
+    volumes:
+      # The trained artifact histogram is the PSI baseline, read from the
+      # scoring model directory so governance measures against the shipped model.
+      - ./services/scoring/engine/models:/etc/credivect/models:ro
     depends_on:
       postgres:
         condition: service_healthy
       dragonfly:
         condition: service_healthy
+      scoring:
+        condition: service_healthy
       redpanda:
         condition: service_started
+      temporal:
+        condition: service_started
+
+  # =========================================================================
+  # 3b. ONE-OFF SEED RUNNER (make seed): originates a real scored book
+  # =========================================================================
+  seed:
+    image: credivect-core:latest
+    container_name: credivect-seed
+    profiles: ["tools"]
+    entrypoint: ["/app/credivect-seed"]
+    command: ["-applications", "${SEED_APPLICATIONS:-240}"]
+    environment:
+      - JWT_SECRET=${JWT_SECRET:-credivect-super-secure-local-jwt-secret-key-32bytes!}
+      - SSN_ENCRYPTION_KEY=${SSN_ENCRYPTION_KEY:-01918a2b4c5d7e6f00112233445566778899aabbccddeeff0011223344556677}
+      - DRAGONFLY_URL=redis://dragonfly:6379/0
+      - POSTGRES_URL=postgres://credivect_user:credivect_password@postgres:5432/credivect?sslmode=disable
+      - KAFKA_BROKERS=redpanda:9092
+      - KAFKA_TOPIC=credivect.application.events
+      - TEMPORAL_HOST=temporal:7233
+      - TEMPORAL_NAMESPACE=default
+      - TEMPORAL_TASK_QUEUE=credivect-underwriting
+      - SCORING_GRPC_HOST=scoring:50051
+      - PSI_BASELINE_FILE=/etc/credivect/models/baseline_deciles.json
+    volumes:
+      - ./services/scoring/engine/models:/etc/credivect/models:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dragonfly:
+        condition: service_healthy
+      scoring:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+      redpanda:
+        condition: service_started
+
+  # =========================================================================
+  # 3b2. ONE-OFF MODEL RETRAINER (make train). The trained artifacts under
+  # services/scoring/engine/models are reproducible from a fixed seed and are not
+  # committed, so a clean checkout regenerates them here; the bind mount writes
+  # them back to the working tree, which is also where core reads its PSI
+  # baseline from.
+  # =========================================================================
+  trainer:
+    image: credivect-scoring:latest
+    container_name: credivect-trainer
+    profiles: ["tools"]
+    entrypoint: ["python", "-m", "engine.train"]
+    volumes:
+      - ./services/scoring/engine/models:/app/engine/models
 
   scoring:
     build:
@@ -100,9 +185,10 @@ services:
       - --smp=1
       - --memory=1G
     ports:
-      - "19092:19092"
-      - "9092:9092"
-      - "9644:9644"
+      # Only the external listener is published; services use redpanda:9092 on the
+      # compose network. The internal 9092/9644 host mappings were redundant and
+      # conflicted with Windows dynamic port reservations on the dev machine.
+      - "${KAFKA_EXTERNAL_HOST_PORT:-19092}:19092"
     volumes:
       - redpanda_data:/var/lib/redpanda/data
 
@@ -115,7 +201,7 @@ services:
     environment:
       KAFKA_BROKERS: redpanda:9092
     ports:
-      - "8080:8080"
+      - "${REDPANDA_CONSOLE_HOST_PORT:-8080}:8080"
 
   temporal:
     image: temporalio/auto-setup:1.29.6
@@ -131,7 +217,7 @@ services:
       - POSTGRES_PWD=credivect_password
       - POSTGRES_SEEDS=postgres
     ports:
-      - "7233:7233"
+      - "${TEMPORAL_HOST_PORT:-7233}:7233"
 
   temporal-ui:
     image: temporalio/ui:2.53.3
@@ -143,7 +229,7 @@ services:
       - TEMPORAL_ADDRESS=temporal:7233
       - TEMPORAL_CORS_ORIGINS=http://localhost:8233
     ports:
-      - "8233:8080"
+      - "${TEMPORAL_UI_HOST_PORT:-8233}:8080"
 
 volumes:
   postgres_data:

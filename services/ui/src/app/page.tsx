@@ -40,7 +40,8 @@ export default function HomePage() {
                   Sub-15ms Latency SLA
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
-                  Dual-engine quantitative scoring: Weight of Evidence (WoE) 300-850 scorecard plus calibrated LightGBM default probability ($PD$).
+                  Dual-engine quantitative scoring: Weight of Evidence (WoE) 300-850 scorecard plus calibrated LightGBM
+                  default probability (PD).
                 </Typography>
               </CardContent>
             </Card>
@@ -66,7 +67,7 @@ export default function HomePage() {
                   FCRA TreeSHAP Explainability
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
-                  Legally compliant Adverse Action Notices with mathematical ranking of top 4 reason codes (`AA01` to `AA05`).
+                  Legally compliant Adverse Action Notices listing the top 4 ranked reason codes (AA01-AA05).
                 </Typography>
               </CardContent>
             </Card>

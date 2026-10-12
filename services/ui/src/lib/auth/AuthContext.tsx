@@ -1,21 +1,17 @@
 "use client";
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext } from 'react';
+import type { Role, SessionUser } from '@/lib/api';
 
-export interface User {
-  id: string;
-  email: string;
-  firstName: string;
-  lastName: string;
-  role: 'APPLICANT' | 'UNDERWRITER' | 'COMPLIANCE_ADMIN';
-}
+export type { Role, SessionUser };
 
 export interface AuthContextType {
-  user: User | null;
+  user: SessionUser | null;
   token: string | null;
   isAuthenticated: boolean;
-  role: 'APPLICANT' | 'UNDERWRITER' | 'COMPLIANCE_ADMIN';
-  login: (email: string) => Promise<void>;
+  role: Role | null;
+  ready: boolean;
+  login: (email: string, password: string) => Promise<SessionUser>;
   logout: () => void;
 }
 
@@ -23,8 +19,9 @@ export const AuthContext = createContext<AuthContextType>({
   user: null,
   token: null,
   isAuthenticated: false,
-  role: 'APPLICANT',
-  login: async () => {},
+  role: null,
+  ready: false,
+  login: async () => ({ id: '', email: '', name: '', role: 'BORROWER' }),
   logout: () => {},
 });
 

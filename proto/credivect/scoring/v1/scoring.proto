@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package credivect.scoring.v1;
 
-option go_package = "credivect/services/core/internal/proto/scoring/v1;scoringv1";
+option go_package = "credivect/core/internal/proto/scoringv1;scoringv1";
 
 service ScoringService {
   rpc CalculateRisk (CalculateRiskRequest) returns (CalculateRiskResponse);
@@ -57,6 +57,10 @@ message CalculateRiskResponse {
   
   int64 execution_time_micros = 11;
   string model_version = 12;
+
+  // Raw tree ensemble margin (logit) before Platt scaling. Persisted in
+  // scoring_runs.raw_ml_logit for calibration monitoring.
+  double raw_logit = 13;
 }
 
 message FeatureAttribution {

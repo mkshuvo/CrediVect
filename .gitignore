@@ -46,3 +46,8 @@ Thumbs.db
 # Docker local data volumes (if any mounted directly)
 *.log
 docker-volumes/
+
+# Trained PD model artifacts. Reproducible from engine/train.py's fixed seed, so
+# `make train` (or the scoring image build) regenerates them on a clean clone.
+# core reads baseline_deciles.json from this directory as its PSI baseline.
+services/scoring/engine/models/

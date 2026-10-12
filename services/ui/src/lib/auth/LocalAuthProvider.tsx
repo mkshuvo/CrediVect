@@ -1,85 +1,65 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
-import { AuthContext, User } from './AuthContext';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { api, clearSession, getToken, getStoredUser, saveSession } from '@/lib/api';
+import { AuthContext, SessionUser } from './AuthContext';
 
+// Real session handling against core's /auth/login. Nothing here fabricates a
+// signed-in identity: if there is no token in storage the app is unauthenticated
+// and the server, not the client, decides what that means.
 export default function LocalAuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<SessionUser | null>(null);
   const [token, setToken] = useState<string | null>(null);
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    // Check saved session
-    const saved = localStorage.getItem('credivect_user');
-    const savedToken = localStorage.getItem('credivect_token');
-    if (saved && savedToken) {
-      try {
-        setUser(JSON.parse(saved));
-        setToken(savedToken);
-      } catch (e) {
-        localStorage.clear();
-      }
-    } else {
-      // Default to Underwriter session for immediate dashboard testing
-      const defaultUnderwriter: User = {
-        id: 'usr-underwriter-sarah',
-        email: 'underwriter@credivect.com',
-        firstName: 'Sarah',
-        lastName: 'Jenkins',
-        role: 'UNDERWRITER',
-      };
-      setUser(defaultUnderwriter);
-      setToken('demo-underwriter-session-token');
+    const storedToken = getToken();
+    const storedUser = getStoredUser();
+    if (!storedToken || !storedUser) {
+      setReady(true);
+      return;
     }
+    setToken(storedToken);
+    setUser(storedUser);
+    // Re-read the identity so a token whose user was deleted cannot keep the
+    // stale profile on screen; a 401 clears the session.
+    api
+      .me()
+      .then((fresh) => setUser(fresh))
+      .catch(() => {
+        clearSession();
+        setUser(null);
+        setToken(null);
+      })
+      .finally(() => setReady(true));
   }, []);
 
-  const login = async (email: string) => {
-    let role: 'APPLICANT' | 'UNDERWRITER' | 'COMPLIANCE_ADMIN' = 'APPLICANT';
-    let firstName = 'Alex';
-    let lastName = 'Chen';
+  const login = useCallback(async (email: string, password: string) => {
+    const res = await api.login(email, password);
+    saveSession(res.token, res.user);
+    setToken(res.token);
+    setUser(res.user);
+    return res.user;
+  }, []);
 
-    if (email.includes('underwriter')) {
-      role = 'UNDERWRITER';
-      firstName = 'Sarah';
-      lastName = 'Jenkins';
-    } else if (email.includes('admin')) {
-      role = 'COMPLIANCE_ADMIN';
-      firstName = 'David';
-      lastName = 'Vogel';
-    }
-
-    const newUser: User = {
-      id: 'usr-' + Date.now(),
-      email,
-      firstName,
-      lastName,
-      role,
-    };
-    const newToken = 'session-token-' + Date.now();
-    setUser(newUser);
-    setToken(newToken);
-    localStorage.setItem('credivect_user', JSON.stringify(newUser));
-    localStorage.setItem('credivect_token', newToken);
-  };
-
-  const logout = () => {
+  const logout = useCallback(() => {
+    clearSession();
     setUser(null);
     setToken(null);
-    localStorage.removeItem('credivect_user');
-    localStorage.removeItem('credivect_token');
-  };
+  }, []);
 
-  return (
-    <AuthContext.Provider
-      value={{
-        user,
-        token,
-        isAuthenticated: !!user,
-        role: user?.role || 'APPLICANT',
-        login,
-        logout,
-      }}
-    >
-      {children}
-    </AuthContext.Provider>
+  const value = useMemo(
+    () => ({
+      user,
+      token,
+      isAuthenticated: !!user && !!token,
+      role: user?.role ?? null,
+      ready,
+      login,
+      logout,
+    }),
+    [user, token, ready, login, logout],
   );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

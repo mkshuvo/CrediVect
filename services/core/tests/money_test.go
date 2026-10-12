@@ -1,8 +1,8 @@
 package tests
 
 import (
-	"testing"
 	"credivect/core/internal/domain"
+	"testing"
 )
 
 func TestMoneyZeroFloatInvariants(t *testing.T) {

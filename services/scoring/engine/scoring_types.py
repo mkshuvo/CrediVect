@@ -61,3 +61,5 @@ class RiskScoringOutput:
     adverse_action_reasons: List[AdverseActionCode] = field(default_factory=list)
     execution_time_micros: int = 0
     model_version: str = "v1.0.0"
+    raw_logit: float = 0.0
+    base_log_odds: float = 0.0

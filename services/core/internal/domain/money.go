@@ -47,7 +47,7 @@ func (m Money) DivIntWithBankersRounding(divisor int64) (Money, error) {
 	if divisor == 0 {
 		return Money{}, fmt.Errorf("division by zero")
 	}
-	
+
 	quotient := m.Cents / divisor
 	remainder := m.Cents % divisor
 	absRemainder := remainder
