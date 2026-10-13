@@ -193,6 +193,10 @@ working tree, which is where core reads its PSI baseline from.
    them from there needs no `#t=` fragment, and another borrower's application id
    answered with the same URL is refused.
 
+Steps 1, 2, 4 and 6 are automated as `make e2e`, which drives them over HTTP
+against the running stack and fails on the first broken invariant; see
+[End-to-end validation](#end-to-end-validation-make-e2e).
+
 ---
 
 ## Command reference
@@ -213,6 +217,8 @@ working tree, which is where core reads its PSI baseline from.
 | `make test` | Both suites: Python scoring tests, then all Go packages |
 | `make test-go` | `go test ./...` in `services/core` |
 | `make test-scoring` | `unittest discover` inside the scoring image |
+| `make bench` | Go benchmarks for the in-process request path (`BENCHTIME=1s make bench` for a longer run) |
+| `make e2e` | Drive one complete loan through the running stack; needs `make up` and `make seed` |
 
 Prefer targeted recreates over `make down`: `docker compose up -d
 --force-recreate core` restarts one service without releasing the Postgres and
@@ -255,7 +261,7 @@ token; roles are `BORROWER`, `UNDERWRITER`, `ADMIN`.
 | `POST /applications` | session optional, rate limited, `Idempotency-Key` required | Originate an application and start the saga; returns the one-time status token. A valid session also binds the account to the credit record, so a broken token is refused rather than treated as anonymous |
 | `GET /applications` | UNDERWRITER, ADMIN | Paged queue with `status`, `tier`, `limit`, `offset` and per-status counts |
 | `GET /me/applications` | BORROWER | The cases the signed-in account originated, unredacted, newest first |
-| `GET /applications/get?id=` | status token, owner session or staff session | One application with bureau file, score, SHAP and decision; borrower-identifying detail is stripped for a token-only caller |
+| `GET /applications/get?id=` | status token, owner session or staff session | One application with bureau file, score, SHAP and decision, including the raw bureau payload as received; borrower-identifying detail and that payload are stripped for a token-only caller, and the queue never carries the payload at all |
 | `POST /applications/review?id=` | UNDERWRITER, ADMIN | Signal the parked saga; returns 202 |
 | `GET /applications/adverse-action?id=` | status token, owner session or staff session | FCRA notice as JSON |
 | `GET /applications/adverse-action.txt?id=` | status token, owner session or staff session | The same notice as plain text |
@@ -343,6 +349,74 @@ ok  credivect/core/tests                # money/rounding, UUIDv7
   authenticate, and that a token in the query string is ignored rather than
   honoured.
 
+### End-to-end validation (`make e2e`)
+
+`services/core/cmd/e2e` is not a unit test: it is a client of the running stack,
+and it exists because the promises that matter here all live on a seam between
+two services. It originates real applications over HTTP, waits for the durable
+saga to decide them, and reads the result back through each of the three
+capacities, exiting non-zero on the first broken invariant. Forty-two checks:
+
+- the stack reports every dependency up, and names the model version it serves;
+- validation refuses a submission without FCRA consent, an unknown body field,
+  and a zero requested amount;
+- replaying an `Idempotency-Key` returns the identical booked case rather than a
+  second one;
+- an anonymous read is refused, a forged token is refused, and **a token in the
+  query string is ignored** rather than honoured;
+- the token holder's read is redacted field by field, keeps the score it is
+  entitled to, never echoes the submitted SSN, and returns the requested amount
+  as the exact integer cents that were sent;
+- the saga reaches a decision, its score sits in 300-850, its PD is a
+  probability, the engine's model version equals the registered active version,
+  and the attribution list and reason codes are populated;
+- a scored adverse case returns the FCRA notice with its disclosures, and an
+  approved case refuses one;
+- a staff session sees the income, the debt and the raw bureau payload the model
+  was handed;
+- the borrower link exists, a second filing for a different consumer never
+  repoints it, the queue stays scoped to the linked record, and the owner reads
+  its own case unredacted on the session alone;
+- a borrower session cannot read someone else's record, and cannot open the
+  underwriting queue;
+- the audit chain recomputes from genesis across every entry written so far;
+- scoring sits inside its SLA on the measured population, drift recomputes for
+  an admin and is refused to an underwriter.
+
+```
+$ make e2e
+PASS  the audit chain verifies (1032 entries, head 91fc3aef7799809f...)
+PASS  scoring stays inside its SLA (p50 1.48 ms, p95 3.11 ms, p99 15.40 ms over 256 runs (target 15 ms))
+42 checks passed, 0 failed
+RESULT: PASS
+```
+
+`CORE_URL` points it at another deployment and `E2E_DECISION_TIMEOUT` bounds how
+long it waits for the saga.
+
+### In-process cost (`make bench`)
+
+The latency table below measures the engine over the network. These benchmarks
+measure what the API itself spends per request, with no I/O in the way, so a CPU
+regression in the request path is visible without a stack to run against:
+
+| Path | Cost per operation |
+| --- | --- |
+| SSN blind index | 0.8 us |
+| SSN encrypt + decrypt round trip | 0.6 us |
+| Capability token issue, digest and compare | 0.7 us |
+| Simulated bureau file derivation | 22 us |
+| One Merkle chain link (payload hash + fold) | 0.9 us |
+| UUIDv7 key generation | 0.9 us |
+| Money divide with banker's rounding | 3 ns |
+| Borrower redaction of a full record | 0.07 us |
+
+Everything the core service computes for a borrower read is therefore tens of
+microseconds against a 15 ms budget, which is the point: the request path is
+database and gRPC bound, not CPU bound. Measured on an AMD Ryzen 5 9600X with
+`BENCHTIME=1000x`; a CI run reports the same set without asserting thresholds, so
+the numbers arrive as a reviewable diff rather than a flaky gate.
+
 ### Measured latency
 
 The 15 ms claim is engine time only (gRPC call to decision), measured over the
@@ -363,13 +437,16 @@ scoring.
 
 ### Continuous integration
 
-`.github/workflows/ci.yml` runs four jobs on every push and pull request: `go`
-(gofmt, `go vet`, build, `go test -count=1 ./...`), `scoring` (build the scoring
-image, which trains the model from the fixed seed, then run the 20 unittests
-inside it), `ui` (`npm ci` and a production `next build`), and `compose` (`docker
-compose config` validates the stack file). The commands are the same ones `make
-test` and `make up` run locally, and all four pass here; the workflow itself has
-not executed on a GitHub runner yet, so treat its first green run as unverified.
+`.github/workflows/ci.yml` runs five jobs on every push and pull request: `go`
+(gofmt, `go vet`, build, `go test -count=1 ./...`, then the benchmarks),
+`scoring` (build the scoring image, which trains the model from the fixed seed,
+then run the 20 unittests inside it), `ui` (`npm ci` and a production `next
+build`), `compose` (`docker compose config` validates the stack file), and `e2e`
+(train the artifacts onto the checkout, bring the whole stack up, seed it, and
+run `cmd/e2e` against it over HTTP). The commands are the same ones `make test`,
+`make seed` and `make e2e` run locally. The first four have passed here; the
+`e2e` job's sequence is the one documented above but the workflow itself has not
+executed on a GitHub runner yet, so treat its first green run as unverified.
 
 ---
 
@@ -457,9 +534,10 @@ credential; a borrower session that owns the credit record is accepted on the
 same routes and sees the file unredacted, because it is theirs; a staff session
 (`UNDERWRITER` or `ADMIN`) sees the complete record. A token-only caller gets a
 redacted projection: the applicant's email, date of birth, income, external id,
-employment status and the full tradeline detail are stripped, leaving the
-decision, the score and the explanation the applicant is entitled to see. No
-credential, no answer: those routes return 401 rather than a preview.
+employment status, the full tradeline detail and the raw bureau payload are
+stripped, leaving the decision, the score and the explanation the applicant is
+entitled to see. No credential, no answer: those routes return 401 rather than a
+preview.
 
 Ownership is resolved from the database on every request, never from a claim
 inside the session token, so revoking or creating a link takes effect
@@ -498,6 +576,7 @@ services/core/             Go API, repository, saga, activities, auth, audit cha
   cmd/server/              HTTP server + worker bootstrap
   cmd/ingest/              Kafka consumer service and its read-only HTTP API
   cmd/seed/                Seeder (users, model version, applications)
+  cmd/e2e/                 End-to-end validation client (make e2e)
   internal/{api,auth,bureau,cache,client,config,domain,events,governance,ingest,security,storage,workflow}
   tests/                   Money, rounding and UUIDv7 tests
 services/scoring/          Python gRPC scoring service

@@ -46,6 +46,7 @@ export default function UnderwriterQueue() {
   const [autoRefresh, setAutoRefresh] = useState(true);
 
   const [page, setPage] = useState<ApplicationPage | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selected, setSelected] = useState<Application | null>(null);
   const [state, setState] = useState<WorkflowState | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -64,12 +65,12 @@ export default function UnderwriterQueue() {
       });
       setPage(data);
       setError(null);
-      // Re-read the open row so a finalized review does not leave stale verdict
-      // data in the detail panel; a row that drops out of the filtered page
-      // simply deselects. Functional update keeps `selected` out of this
-      // callback's dependencies, otherwise refreshing would re-create `load`
-      // and re-trigger its own effect.
-      setSelected((current) => (current ? (data.applications.find((row) => row.id === current.id) ?? null) : null));
+      // A row that drops out of the filtered page deselects; one that is still
+      // listed keeps its id, and the detail effect below re-reads it so a
+      // finalized review does not leave a stale verdict in the panel. Functional
+      // update keeps `selectedId` out of this callback's dependencies, otherwise
+      // refreshing would re-create `load` and re-trigger its own effect.
+      setSelectedId((current) => (current && data.applications.some((row) => row.id === current) ? current : null));
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not read the underwriting queue.');
     } finally {
@@ -87,6 +88,25 @@ export default function UnderwriterQueue() {
     const timer = setInterval(load, POLL_INTERVAL_MS);
     return () => clearInterval(timer);
   }, [autoRefresh, isAuthenticated, mayWorkQueue, load]);
+
+  // The queue response carries one row per case, not the bureau payload: paging
+  // twenty credit files into a list is waste, and the list never shows them. An
+  // opened row is therefore re-read as a single record, which is also what keeps
+  // the panel current on every poll.
+  useEffect(() => {
+    if (!selectedId) {
+      setSelected(null);
+      return;
+    }
+    let cancelled = false;
+    api
+      .getApplication(selectedId)
+      .then((app) => !cancelled && setSelected(app))
+      .catch((err) => !cancelled && setError(err instanceof ApiError ? err.message : 'Could not read the application.'));
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId, page]);
 
   // The query is only valid while the execution is open; a completed workflow
   // cannot be queried, so the stage line is dropped once the case is decided.
@@ -249,7 +269,7 @@ export default function UnderwriterQueue() {
                     key={app.id}
                     hover
                     selected={selected?.id === app.id}
-                    onClick={() => setSelected(app)}
+                    onClick={() => setSelectedId(app.id)}
                     sx={{ cursor: 'pointer' }}
                   >
                     <TableCell>

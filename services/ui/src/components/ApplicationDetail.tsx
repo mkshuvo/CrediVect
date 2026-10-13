@@ -21,6 +21,14 @@ import { ApiError, downloadAdverseActionNotice } from '@/lib/api';
 import { formatBpsToPercent, formatCentsToDollars } from '@/lib/formatters';
 import ShapWaterfall from '@/components/ShapWaterfall';
 
+function formatPayload(raw: string): string {
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2);
+  } catch {
+    return raw;
+  }
+}
+
 const tierColor: Record<string, 'success' | 'info' | 'warning' | 'error'> = {
   SUPER_PRIME: 'success',
   PRIME: 'success',
@@ -40,6 +48,7 @@ export default function ApplicationDetail({
   const bureau = app.bureau_report;
   const [noticeError, setNoticeError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const [payloadOpen, setPayloadOpen] = useState(false);
 
   const saveNotice = async () => {
     setDownloading(true);
@@ -110,6 +119,39 @@ export default function ApplicationDetail({
               <Row label="Oldest trade" value={`${bureau.age_of_oldest_trade_months} months`} />
               <Row label="Bankruptcy flag" value={bureau.bankruptcy_flag ? 'PRESENT (policy knockout)' : 'none'} />
               <Row label="File valid time" value={bureau.valid_time} />
+              {bureau.raw_payload ? (
+                <>
+                  <Button
+                    size="small"
+                    onClick={() => setPayloadOpen((open) => !open)}
+                    sx={{ mt: 1, alignSelf: 'flex-start' }}
+                  >
+                    {payloadOpen ? 'Hide the payload as received' : 'Show the payload as received'}
+                  </Button>
+                  {payloadOpen && (
+                    <Box
+                      component="pre"
+                      sx={{
+                        mt: 1,
+                        p: 1.5,
+                        bgcolor: '#0F172A',
+                        color: '#E2E8F0',
+                        borderRadius: 1,
+                        overflowX: 'auto',
+                        fontSize: 12,
+                        lineHeight: 1.5,
+                        maxHeight: 320,
+                      }}
+                    >
+                      {formatPayload(bureau.raw_payload)}
+                    </Box>
+                  )}
+                </>
+              ) : (
+                <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+                  The raw payload is only returned on the record view, never in the queue.
+                </Typography>
+              )}
             </Section>
           ) : (
             <Typography variant="body2" color="text.secondary">

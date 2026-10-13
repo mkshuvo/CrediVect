@@ -79,6 +79,8 @@ export interface BureauReport {
   open_trades: number;
   bankruptcy_flag: boolean;
   age_of_oldest_trade_months: number;
+  // Present only on the single-record read: the queue does not ship credit files.
+  raw_payload?: string;
   valid_time: string;
 }
 

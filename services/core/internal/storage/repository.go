@@ -322,7 +322,32 @@ func (r *Repository) GetApplication(ctx context.Context, id string) (domain.Cred
 	if err := r.attachExplanation(ctx, &app); err != nil {
 		return app, err
 	}
+	if app.BureauReport != nil {
+		payload, err := r.LatestBureauPayload(ctx, app.ID)
+		if err != nil {
+			return app, err
+		}
+		app.BureauReport.RawPayload = payload
+	}
 	return app, nil
+}
+
+// LatestBureauPayload reads the untouched bureau response for one application.
+// The shared application select leaves it out on purpose: the underwriting queue
+// pages through twenty records at a time and has no use for twenty credit files,
+// while the detail view is exactly where a desk checks what the model was handed.
+func (r *Repository) LatestBureauPayload(ctx context.Context, applicationID string) (string, error) {
+	var payload string
+	err := r.pool.QueryRow(ctx, `
+		SELECT raw_payload::text FROM bureau_reports
+		WHERE application_id = $1 ORDER BY transaction_time DESC LIMIT 1`, applicationID).Scan(&payload)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("load bureau payload: %w", err)
+	}
+	return payload, nil
 }
 
 func (r *Repository) ListApplications(ctx context.Context, status, tier string, limit, offset int) ([]domain.CreditApplication, error) {

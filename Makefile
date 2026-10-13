@@ -1,4 +1,4 @@
-.PHONY: up down build rebuild ps logs health test test-go test-scoring seed train proto migrate
+.PHONY: up down build rebuild ps logs health test test-go test-scoring bench e2e seed train proto migrate
 
 # Same overrides docker compose reads; gitignored, so fall back to the defaults.
 -include .env
@@ -59,3 +59,17 @@ test-scoring:
 
 test-go:
 	cd services/core && go test ./...
+
+# The in-process cost of the request path, with no I/O: hashing, blind indexes,
+# money arithmetic, key generation and redaction. Run longer with
+# BENCHTIME=1s make bench
+BENCHTIME ?= 1000x
+bench:
+	cd services/core && go test -run '^$$' -bench=. -benchmem -benchtime=$(BENCHTIME) ./internal/...
+
+# Drives one complete loan through the running stack and asserts the promises
+# that cross a service boundary: the saga's decision, the three read
+# capacities, the FCRA notice, the ledger chain and the scoring SLA. Needs
+# `make up` and `make seed` first.
+e2e:
+	cd services/core && go run ./cmd/e2e
