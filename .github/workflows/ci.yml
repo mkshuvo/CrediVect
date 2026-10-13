@@ -87,15 +87,29 @@ jobs:
         with:
           go-version-file: services/core/go.mod
           cache-dependency-path: services/core/go.sum
+      # Built explicitly and before anything starts: ingest carries no build
+      # section of its own, it runs the image core produces, so one `up --build`
+      # has to resolve a tag that does not exist yet on a clean runner.
+      - name: Build the images the stack runs
+        run: docker compose build core scoring
       # The model artifacts are reproducible from a fixed seed and deliberately
       # not committed, and core reads the trained histogram as its PSI baseline,
       # so training has to happen before anything starts.
-      - name: Build the scoring engine and train its artifacts
-        run: |
-          docker compose build scoring
-          docker compose run --rm trainer
+      - name: Train the scoring engine's artifacts
+        run: docker compose run --rm trainer
       - name: Start the stack
-        run: docker compose up -d --build postgres dragonfly redpanda temporal scoring core ingest
+        run: |
+          set +e
+          out=$(docker compose up -d postgres dragonfly redpanda temporal scoring core ingest 2>&1)
+          code=$?
+          printf '%s\n' "$out"
+          if [ "$code" -ne 0 ]; then
+            # Raw job logs need admin rights on the repository; an annotation does
+            # not, so the reason survives to whoever is reading the check run.
+            printf '::error::compose up exited %s: %s\n' "$code" \
+              "$(printf '%s' "$out" | tr '\n\r' '  ' | cut -c1-400)"
+          fi
+          exit "$code"
       - name: Wait for every dependency to report UP
         run: |
           for i in $(seq 1 90); do
