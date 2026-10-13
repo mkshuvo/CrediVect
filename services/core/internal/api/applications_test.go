@@ -109,3 +109,21 @@ func TestRedactForBorrowerDoesNotMutateTheCaller(t *testing.T) {
 		t.Error("redaction mutated the caller's record, which would corrupt a shared read")
 	}
 }
+
+// The applicant's external reference used to be the first eight hex characters of
+// their UUIDv7. Those 32 bits are the millisecond timestamp shifted down, so two
+// people originating inside the same 65-second window were handed the same
+// reference and the second insert died on the unique constraint as an HTTP 500.
+func TestApplicantExternalReferenceCannotCollide(t *testing.T) {
+	seen := map[string]bool{}
+	for i := 0; i < 500; i++ {
+		ref := "user-" + domain.NewUUIDv7()
+		if seen[ref] {
+			t.Fatalf("two applicants were handed the same external reference %s", ref)
+		}
+		seen[ref] = true
+		if len(ref) > 100 {
+			t.Fatalf("reference %q exceeds the 100 character column", ref)
+		}
+	}
+}

@@ -63,13 +63,23 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/v1/auth/login", s.HandleLogin)
 	mux.Handle("GET /api/v1/auth/me", s.guard.RequireRole(auth.RoleBorrower, auth.RoleUnderwriter, auth.RoleAdmin)(http.HandlerFunc(s.HandleMe)))
 
-	mux.HandleFunc("POST /api/v1/applications", s.HandleCreateApplication)
+	// Origination stays open to anonymous callers, but Authenticate still runs:
+	// a session that is present has to be visible to the handler, because an
+	// application filed while signed in is what binds the account to the credit
+	// record. A bearer token that does not verify is rejected rather than
+	// silently downgraded to anonymous, which would book the case and lose its
+	// owner without telling anyone.
+	mux.Handle("POST /api/v1/applications", s.guard.Authenticate(http.HandlerFunc(s.HandleCreateApplication)))
 	mux.Handle("GET /api/v1/applications", s.guard.RequireRole(auth.RoleUnderwriter, auth.RoleAdmin)(http.HandlerFunc(s.HandleListApplications)))
+	// A borrower's own queue, scoped by the applicant record bound to the session.
+	mux.Handle("GET /api/v1/me/applications", s.guard.RequireRole(auth.RoleBorrower)(http.HandlerFunc(s.HandleMyApplications)))
+
 	// These four each describe one named consumer. Origination is anonymous, so
-	// the applicant's credential is the capability token returned by
-	// POST /applications rather than a session; Authenticate lets an underwriter
-	// or admin session in through the same route, and the handler decides which
-	// one it saw. Neither credential means neither answer.
+	// an applicant who never signed in holds the capability token returned by
+	// POST /applications; a borrower session that owns the record is the other
+	// way in, and Authenticate lets staff through the same route. The handler
+	// decides which of the three it saw, and how much to show. No credential, no
+	// answer.
 	mux.Handle("GET /api/v1/applications/get", s.guard.Authenticate(http.HandlerFunc(s.HandleGetApplication)))
 	mux.Handle("POST /api/v1/applications/review", s.guard.RequireRole(auth.RoleUnderwriter, auth.RoleAdmin)(http.HandlerFunc(s.HandleReviewDecision)))
 	mux.Handle("GET /api/v1/applications/adverse-action", s.guard.Authenticate(http.HandlerFunc(s.HandleAdverseAction)))

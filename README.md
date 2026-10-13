@@ -152,11 +152,17 @@ fills them for you):
 | --- | --- | --- | --- |
 | Underwriter | `sarah.jenkins@credivect.example` | `credivect-underwriter` | underwriter queue |
 | Risk admin | `risk.admin@credivect.example` | `credivect-admin` | queue + governance |
-| Borrower | `alex.chen@example.com` | `credivect-borrower` | loan wizard |
+| Borrower | `alex.chen@example.com` | `credivect-borrower` | loan wizard + `/my-applications` |
 
 The borrower wizard (`/apply`) needs no session at all: fill step 1, size the
 loan on step 2, tick the FCRA consent on step 3, and you are redirected to
 `/status/<application id>`, which polls itself to a decision.
+
+Applying while signed in as the borrower additionally binds the account to the
+credit record the application was filed against, and `/my-applications` then
+lists those cases through the session alone - no access code required, and the
+records come back unredacted because they are the caller's own file. The seed
+binds `alex.chen@example.com` to its first case for exactly this reason.
 
 `make train` is required once on a clean checkout because the trained artifacts
 are reproducible from a fixed seed and are therefore not committed. The scoring
@@ -174,13 +180,18 @@ working tree, which is where core reads its PSI baseline from.
    open the row in `/dashboard`, set terms, send the decision. The borrower page
    flips to an approval within a couple of polls.
 4. If the case is declined, the same page renders the Notice of Adverse Action
-   and links the plain-text download.
+   and the plain-text download of it. A referred case offers the same notice as
+   the draft its reasons already support.
 5. Sign in as the risk admin and open `/dashboard/governance`: latency
    percentiles, chain verification, model registry agreement, PSI drift, and the
    ledger entries your steps just appended - including
    `UNDERWRITER_OVERRIDE_SIGNAL` with your user id. An underwriter can read
    every panel too; only the admin role may re-measure PSI, so a drift number
    always traces to a named decision-maker.
+6. Sign in as the borrower and open `/my-applications`: the cases that account
+   originated, reachable with the session and no access code. Opening one of
+   them from there needs no `#t=` fragment, and another borrower's application id
+   answered with the same URL is refused.
 
 ---
 
@@ -241,13 +252,14 @@ token; roles are `BORROWER`, `UNDERWRITER`, `ADMIN`.
 | `GET /health` and `GET /api/v1/health` | none | Liveness of core and each dependency |
 | `POST /auth/login` | none | Issue a 12-hour HS256 session token |
 | `GET /auth/me` | any role | Echo the caller's claims |
-| `POST /applications` | none, rate limited, `Idempotency-Key` required | Originate an application and start the saga; returns the one-time status token |
+| `POST /applications` | session optional, rate limited, `Idempotency-Key` required | Originate an application and start the saga; returns the one-time status token. A valid session also binds the account to the credit record, so a broken token is refused rather than treated as anonymous |
 | `GET /applications` | UNDERWRITER, ADMIN | Paged queue with `status`, `tier`, `limit`, `offset` and per-status counts |
-| `GET /applications/get?id=` | status token or staff session | One application with bureau file, score, SHAP and decision; borrower-identifying detail is stripped for a token caller |
+| `GET /me/applications` | BORROWER | The cases the signed-in account originated, unredacted, newest first |
+| `GET /applications/get?id=` | status token, owner session or staff session | One application with bureau file, score, SHAP and decision; borrower-identifying detail is stripped for a token-only caller |
 | `POST /applications/review?id=` | UNDERWRITER, ADMIN | Signal the parked saga; returns 202 |
-| `GET /applications/adverse-action?id=` | status token or staff session | FCRA notice as JSON |
-| `GET /applications/adverse-action.txt?id=` | status token or staff session | The same notice as plain text |
-| `GET /applications/workflow-state?id=` | status token or staff session | Temporal query: current stage, tier, waiting-since |
+| `GET /applications/adverse-action?id=` | status token, owner session or staff session | FCRA notice as JSON |
+| `GET /applications/adverse-action.txt?id=` | status token, owner session or staff session | The same notice as plain text |
+| `GET /applications/workflow-state?id=` | status token, owner session or staff session | Temporal query: current stage, tier, waiting-since |
 | `GET /governance/ledger?limit=` | UNDERWRITER, ADMIN | Tail of the audit chain |
 | `GET /governance/verify` | any role | Recompute and verify every hash link |
 | `GET /governance/drift` | UNDERWRITER, ADMIN | Stored PSI evaluations |
@@ -259,9 +271,12 @@ An idempotency key is only consumed by a request that passes validation, so a
 rejected submission can be corrected and retried with the same key.
 
 A status token is the 43-character credential `POST /applications` returns once
-per case. Send it as `X-Status-Token`, or as `?token=` where the browser has to
-fetch it through a link. Core stores only its SHA-256 digest, so neither a table
-read nor a database backup can be used to impersonate a borrower.
+per case. Send it as `X-Status-Token`; the query string is not accepted, because
+a credential in a URL ends up in access logs, browser history and referrer
+headers. Core stores only its SHA-256 digest, so neither a table read nor a
+database backup can be used to impersonate a borrower. The notice download is
+fetched with that header and saved by the browser, which is why no borrower URL
+carries a credential.
 
 ### Data model
 
@@ -293,7 +308,7 @@ ok  credivect/core/internal/workflow    # saga behaviour
 ok  credivect/core/tests                # money/rounding, UUIDv7
 ```
 
-65 Go test functions plus 20 Python tests, all passing. The interesting ones:
+66 Go test functions plus 20 Python tests, all passing. The interesting ones:
 
 - **Saga tests** (`internal/workflow/saga_test.go`) run the real workflow against
   Temporal's test environment with a mock clock: automatic approval, automatic
@@ -316,11 +331,17 @@ ok  credivect/core/tests                # money/rounding, UUIDv7
   borrower session, and a credential that will not parse is rejected on all
   twelve guarded routes. Deleting one `s.guard.RequireRole(...)` wrapper makes it
   fail, which is exactly the mistake that once left the FCRA notice endpoints open.
+- **Origination tests** (`internal/api/applications_test.go`) pin the redaction
+  contract field by field, and assert the applicant's external reference cannot
+  collide: it used to be the first eight hex characters of a UUIDv7, which two
+  borrowers applying inside the same 65-second window shared, turning the second
+  submission into a unique-constraint failure.
 - **Capability token tests** (`internal/security/token_test.go`,
   `internal/api/status_token_test.go`) check tokens are unguessable and unique,
   that the digest is stable, that only the exact token matches (not a prefix, an
   extension, or one flipped character), that a row with no digest can never
-  authenticate, and that a header beats the query string.
+  authenticate, and that a token in the query string is ignored rather than
+  honoured.
 
 ### Measured latency
 
@@ -430,26 +451,37 @@ blind indexes used to match borrowers.
 
 The four routes that describe one named consumer - `applications/get`,
 `workflow-state`, `adverse-action` and `adverse-action.txt` - require a
-credential. Origination is anonymous, so the applicant's credential is the
-capability token `POST /applications` returns once; a staff session
-(`UNDERWRITER` or `ADMIN`) is accepted on the same routes and sees the complete
-record. A token caller additionally gets a redacted projection: the applicant's
-email, date of birth, income, external id, employment status and the full
-tradeline detail are stripped, leaving the decision, the score and the
-explanation the applicant is entitled to see. No credential, no answer: those
-routes return 401 rather than a preview.
+credential, and there are three capacities a caller can arrive in. The
+capability token `POST /applications` returns once is the applicant's own
+credential; a borrower session that owns the credit record is accepted on the
+same routes and sees the file unredacted, because it is theirs; a staff session
+(`UNDERWRITER` or `ADMIN`) sees the complete record. A token-only caller gets a
+redacted projection: the applicant's email, date of birth, income, external id,
+employment status and the full tradeline detail are stripped, leaving the
+decision, the score and the explanation the applicant is entitled to see. No
+credential, no answer: those routes return 401 rather than a preview.
+
+Ownership is resolved from the database on every request, never from a claim
+inside the session token, so revoking or creating a link takes effect
+immediately instead of waiting for a 12-hour token to expire. An account is bound
+to a credit record at origination, by a person who simultaneously controls the
+account and supplies the file; no endpoint accepts a claimed identity after the
+fact, because "I know this applicant's email address" is exactly the assertion an
+attacker can make. An account that already owns a record keeps it, so filing
+under a different identifier cannot point an existing account at somebody else's
+file.
 
 The token is 256 bits of randomness, stored only as a SHA-256 digest and compared
 in constant time, so a leaked table cannot be used to read cases. The UI carries
 it in the URL fragment (`/status/<id>#t=...`), which never reaches a server, and
 puts it in `sessionStorage` per application so a reload still works. Two limits
-remain, and both are deliberate rather than accidental: the token is bearer-grade
-(whoever holds it reads that case, and the text download has to put it in a query
-string for the anchor to work), and nothing rotates or revokes one - the digest is
-written once at origination and carries no expiry. Applications seeded before
-capability tokens existed simply have no digest, so they stay unreadable without a
-session. A production rollout replaces the token with a borrower account: the same
-authorization boundary, with an identity behind it that can be reset.
+remain, and both are deliberate rather than accidental: the token is
+bearer-grade, whoever holds it reads that case; and nothing rotates or revokes
+one - the digest is written once at origination and carries no expiry. For a
+borrower who signed in at submission the token is not needed at all, which is
+what `/my-applications` and the session path through `/status/<id>` are for.
+Applications seeded before capability tokens existed simply have no digest, so
+they stay unreadable without a session.
 
 ---
 
@@ -475,8 +507,8 @@ services/scoring/          Python gRPC scoring service
   gen/                     Generated gRPC stubs
   tests/                   Scoring engine and servicer tests
 services/ui/               Next.js App Router client
-  src/app/                 / (landing), /login, /apply, /dashboard,
-                           /dashboard/governance, /status/[id]
+  src/app/                 / (landing), /login, /apply, /my-applications,
+                           /dashboard, /dashboard/governance, /status/[id]
   src/components/          ApplicationDetail, UnderwriterReviewPanel, ShapWaterfall
   src/lib/                 api client, formatters, auth context
 docs/                      Product vision, domain glossary, execution flow,

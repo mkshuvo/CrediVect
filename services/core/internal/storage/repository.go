@@ -344,6 +344,30 @@ func (r *Repository) ListApplications(ctx context.Context, status, tier string, 
 	}
 	args = append(args, limit, offset)
 	sql := appSelect + where + fmt.Sprintf(" ORDER BY a.created_at DESC LIMIT $%d OFFSET $%d", len(args)-1, len(args))
+	return r.queryApplications(ctx, sql, args...)
+}
+
+// ListApplicantApplications returns every case one consumer record has
+// originated, newest first. This is the borrower's own history, and the only
+// listing that is scoped to a person rather than to the whole book.
+func (r *Repository) ListApplicantApplications(ctx context.Context, applicantID string, limit int) ([]domain.CreditApplication, error) {
+	return r.queryApplications(ctx,
+		appSelect+` WHERE a.applicant_id = $1 ORDER BY a.created_at DESC LIMIT $2`, applicantID, limit)
+}
+
+// ApplicantIDForApplication resolves the owner of one record, which is what a
+// borrower session is matched against before it is allowed to read it.
+func (r *Repository) ApplicantIDForApplication(ctx context.Context, applicationID string) (string, error) {
+	var applicantID string
+	err := r.pool.QueryRow(ctx, `SELECT applicant_id::text FROM credit_applications WHERE id = $1`, applicationID).
+		Scan(&applicantID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("application %s not found", applicationID)
+	}
+	return applicantID, err
+}
+
+func (r *Repository) queryApplications(ctx context.Context, sql string, args ...any) ([]domain.CreditApplication, error) {
 	rows, err := r.pool.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err

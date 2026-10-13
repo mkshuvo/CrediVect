@@ -8,6 +8,7 @@ import ShieldIcon from '@mui/icons-material/Security';
 import DashboardIcon from '@mui/icons-material/Dashboard';
 import PostAddIcon from '@mui/icons-material/PostAdd';
 import HistoryEduIcon from '@mui/icons-material/HistoryEdu';
+import AssessmentIcon from '@mui/icons-material/Assessment';
 import { useAuth } from '@/lib/auth/AuthContext';
 
 export default function Navbar() {
@@ -15,6 +16,7 @@ export default function Navbar() {
   const pathname = usePathname();
 
   const queueVisible = role === 'UNDERWRITER' || role === 'ADMIN';
+  const myCasesVisible = role === 'BORROWER';
 
   return (
     <AppBar position="sticky" sx={{ bgcolor: 'primary.main', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
@@ -60,6 +62,16 @@ export default function Navbar() {
               sx={{ color: 'white', fontWeight: pathname === '/dashboard/governance' ? 700 : 400 }}
             >
               Governance &amp; Audit
+            </Button>
+          )}
+          {myCasesVisible && (
+            <Button
+              component={Link}
+              href="/my-applications"
+              startIcon={<AssessmentIcon />}
+              sx={{ color: 'white', fontWeight: pathname === '/my-applications' ? 700 : 400 }}
+            >
+              My Applications
             </Button>
           )}
 

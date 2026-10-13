@@ -18,6 +18,10 @@ export interface SessionUser {
   email: string;
   name: string;
   role: Role;
+  // The consumer record the account owns. Empty for an account that has never
+  // applied while signed in, which is why the borrower queue asks the server
+  // rather than trusting what the session was issued with.
+  applicant_id?: string;
 }
 
 export interface HealthResponse {
@@ -126,6 +130,16 @@ export interface ApplicationPage {
   limit: number;
   offset: number;
   by_status: Record<string, number>;
+}
+
+// The borrower's own cases. `applicant_linked` is false when the account has
+// never originated an application while signed in, so there is no consumer
+// record bound to it and the list is legitimately empty.
+export interface BorrowerApplicationPage {
+  applications: Application[];
+  count: number;
+  applicant_linked: boolean;
+  note?: string;
 }
 
 export interface WorkflowState {
@@ -356,6 +370,10 @@ export const api = {
       },
     ),
 
+  // A borrower's own cases, read through the session rather than a capability
+  // token. The records come back unredacted because they are the caller's file.
+  myApplications: () => request<BorrowerApplicationPage>('/me/applications'),
+
   listApplications: (params: { status?: string; tier?: string; limit?: number; offset?: number } = {}) => {
     const q = new URLSearchParams();
     if (params.status) q.set('status', params.status);
@@ -386,13 +404,31 @@ export const api = {
       headers: statusTokenHeaders(statusToken),
     }),
 
-  // The notice is a server-rendered text attachment; a plain link downloads it
-  // with the statutory wording already formatted. An anchor cannot set a header,
-  // so the status token travels as a query parameter on this one URL.
-  adverseActionNoticeUrl: (id: string, statusToken?: string | null) =>
-    `/api/v1/applications/adverse-action.txt?id=${encodeURIComponent(id)}${
-      statusToken ? `&token=${encodeURIComponent(statusToken)}` : ''
-    }`,
+  // The notice is server-rendered statutory text, fetched rather than pointed at
+  // with an anchor: an anchor carries neither the session nor the status token,
+  // and putting either into a URL leaves it in access logs and browser history.
+  adverseActionNoticeText: async (id: string, statusToken?: string | null): Promise<string> => {
+    const headers: Record<string, string> = { ...statusTokenHeaders(statusToken) };
+    const session = getToken();
+    if (session) headers.Authorization = `Bearer ${session}`;
+    let res: Response;
+    try {
+      res = await fetch(`${API_BASE}/api/v1/applications/adverse-action.txt?id=${encodeURIComponent(id)}`, { headers });
+    } catch {
+      throw new ApiError('Cannot reach the core service. Is the Docker stack running?', 0);
+    }
+    const text = await res.text();
+    if (!res.ok) {
+      let message = text;
+      try {
+        message = JSON.parse(text).error || text;
+      } catch {
+        /* the notice endpoint answers plain text, so an error may be too */
+      }
+      throw new ApiError(message || `Notice request failed with status ${res.status}`, res.status);
+    }
+    return text;
+  },
 
   ledger: (limit = 50, applicationId?: string) =>
     request<AuditEntry[]>(`/governance/ledger?limit=${limit}${applicationId ? `&application_id=${encodeURIComponent(applicationId)}` : ''}`),
@@ -411,3 +447,18 @@ export const api = {
   evaluateDrift: () =>
     request<{ metric: DriftMetric; bins: DriftBin[] }>('/governance/drift', { method: 'POST', body: {} }),
 };
+
+// Fetches the statutory notice and hands it to the browser as a file. The object
+// URL has to outlive the click: revoking it in the same tick cancels the download
+// before the browser has read the blob.
+export async function downloadAdverseActionNotice(id: string, statusToken?: string | null): Promise<void> {
+  const text = await api.adverseActionNoticeText(id, statusToken);
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = `credivect-adverse-action-${id}.txt`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}

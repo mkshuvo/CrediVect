@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import {
   Container,
@@ -22,9 +23,10 @@ import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import HourglassEmptyIcon from '@mui/icons-material/HourglassEmpty';
 import CancelIcon from '@mui/icons-material/Cancel';
 import DescriptionIcon from '@mui/icons-material/Description';
-import { api, ApiError } from '@/lib/api';
+import { api, ApiError, downloadAdverseActionNotice } from '@/lib/api';
 import type { AdverseNotice, Application, WorkflowState } from '@/lib/api';
 import { formatBpsToPercent, formatCentsToDollars } from '@/lib/formatters';
+import { useAuth } from '@/lib/auth/AuthContext';
 import ShapWaterfall from '@/components/ShapWaterfall';
 
 const POLL_INTERVAL_MS = 2500;
@@ -37,6 +39,7 @@ function statusTokenKey(id: string): string {
 
 export default function ApplicationStatusPage() {
   const { id } = useParams<{ id: string }>();
+  const { isAuthenticated, ready: authReady } = useAuth();
   const [app, setApp] = useState<Application | null>(null);
   const [state, setState] = useState<WorkflowState | null>(null);
   const [notice, setNotice] = useState<AdverseNotice | null>(null);
@@ -45,9 +48,15 @@ export default function ApplicationStatusPage() {
   const [statusToken, setStatusToken] = useState<string | null>(null);
   const [noToken, setNoToken] = useState(false);
   const [unauthorized, setUnauthorized] = useState(false);
+  const [noticeError, setNoticeError] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
   // Held in a ref so the interval callback never closes over a stale id, and a
   // response that arrives after unmount cannot set state.
   const alive = useRef(true);
+
+  // Two ways into a record: the capability token from submission, or a session on
+  // the account that originated it. Core decides which one it saw.
+  const canRead = Boolean(statusToken) || isAuthenticated;
 
   // The App Router hands us params.id but never the URL fragment, so the token
   // issued at submission is read from the hash here; sessionStorage keeps it
@@ -64,7 +73,7 @@ export default function ApplicationStatusPage() {
   }, [id]);
 
   const load = useCallback(async () => {
-    if (!id || !statusToken) return;
+    if (!id || !canRead) return;
     try {
       const data = await api.getApplication(id, statusToken);
       if (!alive.current) return;
@@ -82,10 +91,10 @@ export default function ApplicationStatusPage() {
     } finally {
       if (alive.current) setLoaded(true);
     }
-  }, [id, statusToken]);
+  }, [id, statusToken, canRead]);
 
   useEffect(() => {
-    if (!statusToken || unauthorized) return;
+    if (!canRead || unauthorized) return;
     alive.current = true;
     load();
     const timer = setInterval(load, POLL_INTERVAL_MS);
@@ -93,7 +102,7 @@ export default function ApplicationStatusPage() {
       alive.current = false;
       clearInterval(timer);
     };
-  }, [load, statusToken, unauthorized]);
+  }, [load, canRead, unauthorized]);
 
   // The workflow query is only meaningful while the saga is still running; a
   // completed execution is no longer queryable.
@@ -135,9 +144,30 @@ export default function ApplicationStatusPage() {
     };
   }, [app, statusToken]);
 
-  // Neither the fragment nor sessionStorage carried a token: do not fetch at
-  // all, explain calmly instead of error-spamming a guaranteed 401.
-  if (noToken) {
+  const saveNotice = async () => {
+    if (!app) return;
+    setDownloading(true);
+    setNoticeError(null);
+    try {
+      await downloadAdverseActionNotice(app.id, statusToken);
+    } catch (err) {
+      setNoticeError(err instanceof ApiError ? err.message : 'The notice could not be downloaded.');
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  // The session is still being resolved: neither the token nor the account is
+  // known yet, so say nothing rather than claim the code is missing.
+  if (!authReady && !statusToken) {
+    return (
+      <Container maxWidth="sm" sx={{ py: 10, textAlign: 'center' }}>
+        <CircularProgress color="secondary" />
+      </Container>
+    );
+  }
+
+  if (noToken && !isAuthenticated) {
     return (
       <Container maxWidth="sm" sx={{ py: 10 }}>
         <Alert severity="info" sx={{ display: 'block', textAlign: 'left' }}>
@@ -147,9 +177,15 @@ export default function ApplicationStatusPage() {
           <Typography variant="body2" color="text.secondary">
             To keep your credit decision private, status opens only with the one-time access code issued when you
             applied. The code is shown once and cannot be retrieved again, so please reopen the status link from your
-            submission screen; if you applied in another browser tab, the code is still active there. If the link is
-            lost, contact support and we will help you through the next steps.
+            submission screen; if you applied in another browser tab, the code is still active there. If you applied
+            while signed in, sign in here instead and the case opens without a code. Otherwise, contact support and we
+            will help you through the next steps.
           </Typography>
+          <Box sx={{ mt: 2 }}>
+            <Button component={Link} href="/login" variant="outlined" size="small">
+              Sign In
+            </Button>
+          </Box>
         </Alert>
       </Container>
     );
@@ -160,12 +196,16 @@ export default function ApplicationStatusPage() {
       <Container maxWidth="sm" sx={{ py: 10 }}>
         <Alert severity="warning" sx={{ display: 'block', textAlign: 'left' }}>
           <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 1 }}>
-            The access code does not match this application
+            {statusToken
+              ? 'The access code does not match this application'
+              : 'This record is not on the account you are signed in to'}
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            Auto-refresh has stopped. Codes are issued per application and are not reissued, so reopen the status link
-            shown on the submission screen for application {id}. If you applied more than once, each application has
-            its own link and code.
+            {statusToken
+              ? 'Auto-refresh has stopped. Codes are issued per application and are not reissued, so reopen the status link shown on the submission screen for application ' +
+                `${id}. If you applied more than once, each application has its own link and code.`
+              : 'Auto-refresh has stopped. A borrower session opens only the credit record its own account originated; ' +
+                'sign in with the account that filed this application, or use the access code from its submission screen.'}
           </Typography>
         </Alert>
       </Container>
@@ -299,6 +339,19 @@ export default function ApplicationStatusPage() {
                 </>
               )}
             </Alert>
+
+            {/* A referred case already has its reason codes on file, so the notice
+                the credit desk would issue on a decline is readable now. */}
+            <Box sx={{ mt: 3 }}>
+              <Button onClick={saveNotice} disabled={downloading} variant="outlined" color="inherit" startIcon={<DescriptionIcon />}>
+                {downloading ? 'Preparing notice...' : 'Download the notice drafted from your credit file'}
+              </Button>
+              {noticeError && (
+                <Alert severity="error" sx={{ mt: 2 }}>
+                  {noticeError}
+                </Alert>
+              )}
+            </Box>
           </CardContent>
         </Card>
       )}
@@ -363,15 +416,19 @@ export default function ApplicationStatusPage() {
             </Box>
 
             <Button
-              component="a"
-              href={api.adverseActionNoticeUrl(app.id, statusToken)}
+              onClick={saveNotice}
+              disabled={downloading}
               variant="outlined"
               color="error"
               startIcon={<DescriptionIcon />}
-              target="_blank"
             >
-              Download Adverse Action Notice (plain text)
+              {downloading ? 'Preparing notice...' : 'Download Adverse Action Notice (plain text)'}
             </Button>
+            {noticeError && (
+              <Alert severity="error" sx={{ mt: 2 }}>
+                {noticeError}
+              </Alert>
+            )}
           </CardContent>
         </Card>
       )}

@@ -1,6 +1,6 @@
 "use client";
 
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Alert,
   Box,
@@ -17,7 +17,7 @@ import {
 } from '@mui/material';
 import DescriptionIcon from '@mui/icons-material/Description';
 import type { Application, WorkflowState } from '@/lib/api';
-import { api } from '@/lib/api';
+import { ApiError, downloadAdverseActionNotice } from '@/lib/api';
 import { formatBpsToPercent, formatCentsToDollars } from '@/lib/formatters';
 import ShapWaterfall from '@/components/ShapWaterfall';
 
@@ -38,6 +38,20 @@ export default function ApplicationDetail({
 }) {
   const scoring = app.scoring_result;
   const bureau = app.bureau_report;
+  const [noticeError, setNoticeError] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
+
+  const saveNotice = async () => {
+    setDownloading(true);
+    setNoticeError(null);
+    try {
+      await downloadAdverseActionNotice(app.id);
+    } catch (err) {
+      setNoticeError(err instanceof ApiError ? err.message : 'The notice could not be downloaded.');
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   return (
     <Card variant="outlined" sx={{ bgcolor: '#F8FAFC' }}>
@@ -160,9 +174,22 @@ export default function ApplicationDetail({
           )}
 
           {(app.status === 'DECLINED' || app.status === 'IN_REVIEW') && (
-            <Button href={api.adverseActionNoticeUrl(app.id)} target="_blank" startIcon={<DescriptionIcon />}>
-              Adverse action notice
-            </Button>
+            <Box sx={{ mt: 1 }}>
+              <Button
+                onClick={saveNotice}
+                disabled={downloading}
+                startIcon={<DescriptionIcon />}
+                variant="outlined"
+                size="small"
+              >
+                {downloading ? 'Preparing notice...' : 'Adverse action notice'}
+              </Button>
+              {noticeError && (
+                <Alert severity="error" sx={{ mt: 1 }}>
+                  {noticeError}
+                </Alert>
+              )}
+            </Box>
           )}
         </Box>
       </CardContent>

@@ -12,14 +12,47 @@ import (
 
 func (r *Repository) GetUserByEmail(ctx context.Context, email string) (domain.User, error) {
 	var u domain.User
+	var applicantID *string
 	err := r.pool.QueryRow(ctx, `
-		SELECT id::text, email, full_name, role, password_hash, created_at
+		SELECT id::text, email, full_name, role, password_hash, applicant_id::text, created_at
 		FROM users WHERE lower(email) = lower($1)`, email).
-		Scan(&u.ID, &u.Email, &u.FullName, &u.Role, &u.PasswordHash, &u.CreatedAt)
+		Scan(&u.ID, &u.Email, &u.FullName, &u.Role, &u.PasswordHash, &applicantID, &u.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return u, fmt.Errorf("no account for %s", email)
 	}
+	if applicantID != nil {
+		u.ApplicantID = *applicantID
+	}
 	return u, err
+}
+
+// ApplicantIDForUser resolves the consumer record an account owns. Empty string
+// with a nil error means the account exists and has never applied while signed
+// in, which is a normal state rather than a failure.
+func (r *Repository) ApplicantIDForUser(ctx context.Context, userID string) (string, error) {
+	var applicantID *string
+	err := r.pool.QueryRow(ctx, `SELECT applicant_id::text FROM users WHERE id = $1`, userID).Scan(&applicantID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("no account %s", userID)
+	}
+	if applicantID == nil {
+		return "", err
+	}
+	return *applicantID, err
+}
+
+// LinkUserToApplicant claims the consumer record an account originated, and only
+// for an account that does not already own one. The second condition is what
+// stops a signed-in borrower from being pointed at somebody else's credit file
+// by submitting an application under a different SSN; an account that tries it
+// keeps its original link and simply sees no new record.
+func (r *Repository) LinkUserToApplicant(ctx context.Context, userID, applicantID string) (bool, error) {
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE users SET applicant_id = $2 WHERE id = $1 AND applicant_id IS NULL`, userID, applicantID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 func (r *Repository) UpsertUser(ctx context.Context, u domain.User) error {

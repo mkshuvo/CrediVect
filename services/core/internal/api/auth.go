@@ -56,7 +56,7 @@ func (s *Server) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"token":      token,
 		"expires_at": expiresAt,
-		"user":       map[string]any{"id": user.ID, "email": user.Email, "name": user.FullName, "role": user.Role},
+		"user":       map[string]any{"id": user.ID, "email": user.Email, "name": user.FullName, "role": user.Role, "applicant_id": user.ApplicantID},
 	})
 }
 
@@ -66,9 +66,17 @@ func (s *Server) HandleMe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "authentication required")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	body := map[string]any{
 		"id": claims.UserID, "email": claims.Email, "name": claims.Name, "role": claims.Role,
-	})
+	}
+	// The applicant link is read live rather than carried in the session: a
+	// borrower who originates their first case while signed in should see it as
+	// theirs immediately, and a link that is ever revoked must stop working now
+	// rather than whenever the token happens to expire.
+	if applicantID, err := s.repo.ApplicantIDForUser(r.Context(), claims.UserID); err == nil {
+		body["applicant_id"] = applicantID
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (s *Server) HandleHealth(w http.ResponseWriter, r *http.Request) {

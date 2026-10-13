@@ -28,6 +28,13 @@ CREATE TABLE IF NOT EXISTS applicants (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- A BORROWER account is tied to exactly one consumer record. The link is made
+-- when that person originates an application while signed in, which is the only
+-- moment the platform can attribute a credit file to an identity without asking
+-- somebody else to believe an email address matches.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS applicant_id UUID REFERENCES applicants(id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_applicant ON users(applicant_id) WHERE applicant_id IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS credit_applications (
     id UUID PRIMARY KEY,
     applicant_id UUID NOT NULL REFERENCES applicants(id),

@@ -38,6 +38,12 @@ func originate(ctx context.Context, repo *storage.Repository, hasher *security.H
 	last := lastNames[rng.Intn(len(lastNames))]
 	dob := fmt.Sprintf("%04d-%02d-%02d", 1968+rng.Intn(36), 1+rng.Intn(12), 1+rng.Intn(28))
 	ssn := fmt.Sprintf("%09d", 100_000_000+rng.Intn(899_999_999))
+	email := fmt.Sprintf("%s.%s%d@example.com", lower(first), lower(last), index)
+	if index == 0 {
+		// The first case is the one the seeded borrower account is bound to, so it
+		// carries that person's identity rather than a random one.
+		first, last, dob, email = "Alex", "Chen", "1991-03-14", "alex.chen@example.com"
+	}
 	external := fmt.Sprintf("seed-%03d-%s-%s", index, lower(first), lower(last))
 
 	blind := hasher.BlindIndex(ssn)
@@ -49,7 +55,7 @@ func originate(ctx context.Context, repo *storage.Repository, hasher *security.H
 	now := time.Now().UTC().Add(-time.Duration(index) * time.Minute)
 	applicant := domain.Applicant{
 		ID: domain.NewUUIDv7(), ExternalID: external, SSNBlindIndex: blind,
-		FirstName: first, LastName: last, Email: fmt.Sprintf("%s.%s%d@example.com", lower(first), lower(last), index),
+		FirstName: first, LastName: last, Email: email,
 		DateOfBirth: dob, MonthlyIncomeCents: income, CurrencyCode: "USD",
 		EmploymentStatus: "EMPLOYED", CreatedAt: now,
 	}

@@ -64,9 +64,27 @@ func TestRouteTableKeepsItsGates(t *testing.T) {
 		}
 	}
 
+	// The borrower's own queue belongs to the borrower: an underwriter session
+	// must not be able to list somebody else's cases through it.
+	underwriter, _, err := tokens.Issue(auth.Claims{UserID: "u-2", Role: auth.RoleUnderwriter})
+	if err != nil {
+		t.Fatalf("could not issue a test session: %v", err)
+	}
+	if code := do(http.MethodGet, "/api/v1/me/applications", ""); code != http.StatusUnauthorized {
+		t.Errorf("GET /api/v1/me/applications with no session: got %d, want 401", code)
+	}
+	if code := do(http.MethodGet, "/api/v1/me/applications", underwriter); code != http.StatusForbidden {
+		t.Errorf("GET /api/v1/me/applications as UNDERWRITER: got %d, want 403", code)
+	}
+
 	// A credential that will not parse is not an anonymous request: the gate has
-	// to reject it rather than fall through to the handler.
-	for _, rt := range append(append([]struct{ method, path string }{}, staffOnly...), borrowerReads...) {
+	// to reject it rather than fall through to the handler. Origination is
+	// anonymous-capable, so it passes no token when there is none to pass, but a
+	// broken one must not be downgraded to anonymous either: that would book the
+	// case and silently lose the link between it and the account that filed it.
+	gated := append(append([]struct{ method, path string }{}, staffOnly...), borrowerReads...)
+	gated = append(gated, struct{ method, path string }{http.MethodPost, "/api/v1/applications"})
+	for _, rt := range gated {
 		if code := do(rt.method, rt.path, "not-a-session-token"); code != http.StatusUnauthorized {
 			t.Errorf("%s %s with a malformed token: got %d, want 401", rt.method, rt.path, code)
 		}

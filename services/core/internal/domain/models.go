@@ -160,12 +160,15 @@ type DriftMetric struct {
 }
 
 type User struct {
-	ID           string    `json:"id"`
-	Email        string    `json:"email"`
-	FullName     string    `json:"full_name"`
-	Role         string    `json:"role"` // BORROWER, UNDERWRITER, ADMIN
-	PasswordHash string    `json:"-"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID           string `json:"id"`
+	Email        string `json:"email"`
+	FullName     string `json:"full_name"`
+	Role         string `json:"role"` // BORROWER, UNDERWRITER, ADMIN
+	PasswordHash string `json:"-"`
+	// ApplicantID is the consumer record a BORROWER account owns. Empty until
+	// that person originates an application while signed in.
+	ApplicantID string    `json:"applicant_id,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type ChainVerification struct {

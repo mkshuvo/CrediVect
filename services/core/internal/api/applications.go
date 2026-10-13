@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -112,7 +113,7 @@ func (s *Server) HandleCreateApplication(w http.ResponseWriter, r *http.Request)
 
 	now := time.Now().UTC()
 	applicant := domain.Applicant{
-		ID: applicantID, ExternalID: fmt.Sprintf("user-%s", applicantID[:8]),
+		ID: applicantID, ExternalID: "user-" + applicantID,
 		SSNBlindIndex: blindIndex, FirstName: strings.TrimSpace(req.FirstName),
 		LastName: strings.TrimSpace(req.LastName), Email: strings.ToLower(strings.TrimSpace(req.Email)),
 		DateOfBirth: req.DateOfBirth, MonthlyIncomeCents: req.MonthlyIncomeCents,
@@ -123,13 +124,11 @@ func (s *Server) HandleCreateApplication(w http.ResponseWriter, r *http.Request)
 		// re-application refreshes the income and employment the borrower declares
 		// rather than scoring them against a stale record.
 		if err := s.repo.RefreshApplicant(r.Context(), applicant); err != nil {
-			s.releaseKey(key)
-			writeError(w, http.StatusInternalServerError, "could not refresh the applicant record")
+			s.storageFailure(w, key, "could not refresh the applicant record", err)
 			return
 		}
 	} else if err := s.repo.InsertApplicant(r.Context(), applicant, blindIndex, sealed); err != nil {
-		s.releaseKey(key)
-		writeError(w, http.StatusInternalServerError, "could not store the applicant record")
+		s.storageFailure(w, key, "could not store the applicant record", err)
 		return
 	}
 
@@ -142,8 +141,7 @@ func (s *Server) HandleCreateApplication(w http.ResponseWriter, r *http.Request)
 		Version: 1, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.repo.InsertApplication(r.Context(), app); err != nil {
-		s.releaseKey(key)
-		writeError(w, http.StatusInternalServerError, "could not store the application")
+		s.storageFailure(w, key, "could not store the application", err)
 		return
 	}
 
@@ -157,18 +155,22 @@ func (s *Server) HandleCreateApplication(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err := s.repo.SetStatusTokenHash(r.Context(), appID, security.HashStatusToken(statusToken)); err != nil {
-		s.releaseKey(key)
-		writeError(w, http.StatusInternalServerError, "could not store the application status credential")
+		s.storageFailure(w, key, "could not store the application status credential", err)
 		return
 	}
+
+	// An application originated by a signed-in borrower binds the account to the
+	// consumer record it was filed against, and that is the only way the link is
+	// ever created. Nothing here trusts a claimed email address: submitting while
+	// authenticated proves the person controls both the account and the file.
+	s.linkBorrowerAccount(r, applicantID)
 
 	submitted := map[string]any{
 		"requested_amount_cents": app.RequestedAmountCents, "loan_term_months": app.LoanTermMonths,
 		"loan_purpose": app.LoanPurpose, "currency_code": app.CurrencyCode,
 	}
 	if _, err := s.repo.AppendAudit(r.Context(), appID, "APPLICATION_SUBMITTED", "API", submitted); err != nil {
-		s.releaseKey(key)
-		writeError(w, http.StatusInternalServerError, "could not write the audit ledger entry")
+		s.storageFailure(w, key, "could not write the audit ledger entry", err)
 		return
 	}
 
@@ -203,6 +205,14 @@ func (s *Server) releaseKey(key string) {
 	}
 }
 
+// storageFailure answers a failed write. The client is told nothing about the
+// database, so the cause only survives for an operator if it is logged here.
+func (s *Server) storageFailure(w http.ResponseWriter, key, message string, err error) {
+	slog.Error(message, "error", err)
+	s.releaseKey(key)
+	writeError(w, http.StatusInternalServerError, message)
+}
+
 func (s *Server) HandleListApplications(w http.ResponseWriter, r *http.Request) {
 	limit := queryInt(r, "limit", 50, 1, 200)
 	offset := queryInt(r, "offset", 0, 0, 1_000_000)
@@ -230,7 +240,7 @@ func (s *Server) HandleGetApplication(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "id query parameter is required")
 		return
 	}
-	staff, ok := s.authorizeBorrowerRead(w, r, id)
+	scope, ok := s.authorizeBorrowerRead(w, r, id)
 	if !ok {
 		return
 	}
@@ -239,7 +249,7 @@ func (s *Server) HandleGetApplication(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "application not found")
 		return
 	}
-	if !staff {
+	if scope == scopeToken {
 		app = redactForBorrower(app)
 	}
 	writeJSON(w, http.StatusOK, app)

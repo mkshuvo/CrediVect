@@ -80,6 +80,15 @@ func main() {
 		log.Fatalf("seed: %v", err)
 	}
 
+	if *clean {
+		// Truncating applicants cascades to anything that references it, which now
+		// includes the borrower link on users, so the accounts have to be written
+		// after the book is cleared rather than before.
+		if err := truncate(ctx, repo); err != nil {
+			log.Fatalf("seed clean: %v", err)
+		}
+		log.Print("cleared previous application book")
+	}
 	if err := seedUsers(ctx, repo); err != nil {
 		log.Fatalf("seed users: %v", err)
 	}
@@ -87,15 +96,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("seed model version: %v", err)
 	}
-	if *clean {
-		if err := truncate(ctx, repo); err != nil {
-			log.Fatalf("seed clean: %v", err)
-		}
-		log.Print("cleared previous application book")
-	}
 
 	submitted := 0
 	tokens := map[string]string{}
+	var demoApplicantID string
 	for i := 0; i < *count; i++ {
 		app, statusToken, err := originate(ctx, repo, hasher, runtime, rng, i)
 		if err != nil {
@@ -103,6 +107,9 @@ func main() {
 			continue
 		}
 		tokens[app.ID] = statusToken
+		if i == 0 {
+			demoApplicantID = app.ApplicantID
+		}
 		submitted++
 		log.Printf("originated %s amount=%d cents term=%d workflow=%s", app.ID, app.RequestedAmountCents, app.LoanTermMonths, app.WorkflowID)
 	}
@@ -112,6 +119,16 @@ func main() {
 	// Two of the parked reviews get a human decision so the queue shows both
 	// automated and manual outcomes.
 	signalOpenReviews(ctx, repo, runtime)
+
+	// The demo borrower account owns the first seeded case, which is what the API
+	// does when somebody applies while signed in. Without this the account exists
+	// but has no credit record to read, so the borrower side of the product would
+	// not be walkable out of the box.
+	if demoApplicantID != "" {
+		if _, err := repo.LinkUserToApplicant(ctx, demoBorrowerUserID, demoApplicantID); err != nil {
+			log.Printf("seed: could not link the borrower account to its applicant record: %v", err)
+		}
+	}
 
 	printBorrowerLinks(ctx, repo, tokens)
 
@@ -136,7 +153,13 @@ func printBorrowerLinks(ctx context.Context, repo *storage.Repository, tokens ma
 			}
 		}
 	}
+	log.Print("borrower account: sign in as alex.chen@example.com / credivect-borrower, " +
+		"then open /my-applications to read the same cases through a session instead of a token")
 }
+
+// The seeded borrower account. Named because the seeder also binds it to an
+// applicant record, and the two places must agree on the same id.
+const demoBorrowerUserID = "01918a2b-4c5d-7000-8000-0000000000a3"
 
 func seedUsers(ctx context.Context, repo *storage.Repository) error {
 	accounts := []struct {
@@ -144,7 +167,7 @@ func seedUsers(ctx context.Context, repo *storage.Repository) error {
 	}{
 		{"01918a2b-4c5d-7000-8000-0000000000a1", "sarah.jenkins@credivect.example", "Sarah Jenkins", auth.RoleUnderwriter, "credivect-underwriter"},
 		{"01918a2b-4c5d-7000-8000-0000000000a2", "risk.admin@credivect.example", "Risk Admin", auth.RoleAdmin, "credivect-admin"},
-		{"01918a2b-4c5d-7000-8000-0000000000a3", "alex.chen@example.com", "Alex Chen", auth.RoleBorrower, "credivect-borrower"},
+		{demoBorrowerUserID, "alex.chen@example.com", "Alex Chen", auth.RoleBorrower, "credivect-borrower"},
 	}
 	for _, a := range accounts {
 		hash, err := bcrypt.GenerateFromPassword([]byte(a.password), bcrypt.MinCost)
