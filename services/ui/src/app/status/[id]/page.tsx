@@ -47,6 +47,11 @@ export default function ApplicationStatusPage() {
   const [loaded, setLoaded] = useState(false);
   const [statusToken, setStatusToken] = useState<string | null>(null);
   const [noToken, setNoToken] = useState(false);
+  // Nothing may be read until the fragment has been parsed. A session alone can
+  // legitimately 401 on a case this account did not originate, and treating that
+  // as a dead access code would stop a page that was about to be granted access
+  // by the token one effect later.
+  const [tokenResolved, setTokenResolved] = useState(false);
   const [unauthorized, setUnauthorized] = useState(false);
   const [noticeError, setNoticeError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
@@ -67,13 +72,16 @@ export default function ApplicationStatusPage() {
     if (token) {
       window.sessionStorage.setItem(statusTokenKey(id), token);
       setStatusToken(token);
+      setNoToken(false);
     } else {
+      setStatusToken(null);
       setNoToken(true);
     }
+    setTokenResolved(true);
   }, [id]);
 
   const load = useCallback(async () => {
-    if (!id || !canRead) return;
+    if (!id || !canRead || !tokenResolved) return;
     try {
       const data = await api.getApplication(id, statusToken);
       if (!alive.current) return;
@@ -91,10 +99,10 @@ export default function ApplicationStatusPage() {
     } finally {
       if (alive.current) setLoaded(true);
     }
-  }, [id, statusToken, canRead]);
+  }, [id, statusToken, canRead, tokenResolved]);
 
   useEffect(() => {
-    if (!canRead || unauthorized) return;
+    if (!canRead || unauthorized || !tokenResolved) return;
     alive.current = true;
     load();
     const timer = setInterval(load, POLL_INTERVAL_MS);
