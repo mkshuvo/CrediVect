@@ -56,6 +56,19 @@ func (r *Repository) InsertApplicant(ctx context.Context, a domain.Applicant, bl
 	return err
 }
 
+// RefreshApplicant updates the declared fields a re-application can legitimately
+// change, so the second decision is not scored against a stale income. The
+// identifier itself - blind index and sealed SSN - stays as first captured,
+// because this row is the anchor every earlier application points at.
+func (r *Repository) RefreshApplicant(ctx context.Context, a domain.Applicant) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE applicants SET first_name = $2, last_name = $3, email = $4, date_of_birth = $5::date,
+		                      monthly_income_cents = $6, employment_status = $7
+		WHERE id = $1`,
+		a.ID, a.FirstName, a.LastName, a.Email, a.DateOfBirth, a.MonthlyIncomeCents, a.EmploymentStatus)
+	return err
+}
+
 func (r *Repository) InsertApplication(ctx context.Context, app domain.CreditApplication) error {
 	tag, err := r.pool.Exec(ctx, `
 		INSERT INTO credit_applications (id, applicant_id, requested_amount_cents, currency_code,

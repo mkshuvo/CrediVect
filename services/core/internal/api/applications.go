@@ -91,10 +91,15 @@ func (s *Server) HandleCreateApplication(w http.ResponseWriter, r *http.Request)
 	}
 
 	blindIndex := s.hasher.BlindIndex(req.SSN)
+	applicantID := domain.NewUUIDv7()
+	var reapplication bool
 	if existing, err := s.repo.FindApplicantByBlindIndex(r.Context(), blindIndex); err == nil {
 		// A second pull on the same consumer file is a re-application, not a new
-		// borrower record.
+		// borrower record. The applicant identity is the existing row's id: the
+		// unique blind index below refuses a second row for the same person, and
+		// every later read follows this id to find both cases.
 		req.FirstName, req.LastName, req.Email = existing.FirstName, existing.LastName, existing.Email
+		applicantID, reapplication = existing.ID, true
 	}
 
 	sealed, err := s.hasher.Encrypt(req.SSN)
@@ -106,7 +111,6 @@ func (s *Server) HandleCreateApplication(w http.ResponseWriter, r *http.Request)
 	req.SSN = ""
 
 	now := time.Now().UTC()
-	applicantID := domain.NewUUIDv7()
 	applicant := domain.Applicant{
 		ID: applicantID, ExternalID: fmt.Sprintf("user-%s", applicantID[:8]),
 		SSNBlindIndex: blindIndex, FirstName: strings.TrimSpace(req.FirstName),
@@ -114,7 +118,16 @@ func (s *Server) HandleCreateApplication(w http.ResponseWriter, r *http.Request)
 		DateOfBirth: req.DateOfBirth, MonthlyIncomeCents: req.MonthlyIncomeCents,
 		CurrencyCode: "USD", EmploymentStatus: normaliseEmployment(req.EmploymentStatus), CreatedAt: now,
 	}
-	if err := s.repo.InsertApplicant(r.Context(), applicant, blindIndex, sealed); err != nil {
+	if reapplication {
+		// The file the score is computed from has to be current, so a
+		// re-application refreshes the income and employment the borrower declares
+		// rather than scoring them against a stale record.
+		if err := s.repo.RefreshApplicant(r.Context(), applicant); err != nil {
+			s.releaseKey(key)
+			writeError(w, http.StatusInternalServerError, "could not refresh the applicant record")
+			return
+		}
+	} else if err := s.repo.InsertApplicant(r.Context(), applicant, blindIndex, sealed); err != nil {
 		s.releaseKey(key)
 		writeError(w, http.StatusInternalServerError, "could not store the applicant record")
 		return
