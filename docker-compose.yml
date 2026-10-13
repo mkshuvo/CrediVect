@@ -35,7 +35,17 @@ services:
       - "${CORE_HOST_PORT:-8000}:8000"
     environment:
       - PORT=8000
-      - AUTH_MODE=local
+      # local verifies sessions this service minted from its own secret. oidc
+      # adds an external identity provider beside it, so seeded staff accounts
+      # and borrower logins keep working while staff also sign in with the
+      # company directory.
+      - AUTH_MODE=${AUTH_MODE:-local}
+      - OIDC_ISSUER=${OIDC_ISSUER:-}
+      - OIDC_JWKS_URL=${OIDC_JWKS_URL:-}
+      - OIDC_AUDIENCE=${OIDC_AUDIENCE:-credivect-api}
+      - OIDC_ROLE_CLAIM=${OIDC_ROLE_CLAIM:-role}
+      - OIDC_KEY_TTL=${OIDC_KEY_TTL:-5m}
+      - OIDC_ALLOW_CLEARTEXT_KEYS=${OIDC_ALLOW_CLEARTEXT_KEYS:-false}
       - JWT_SECRET=${JWT_SECRET:-credivect-super-secure-local-jwt-secret-key-32bytes!}
       - SSN_ENCRYPTION_KEY=${SSN_ENCRYPTION_KEY:-01918a2b4c5d7e6f00112233445566778899aabbccddeeff0011223344556677}
       - DRAGONFLY_URL=redis://dragonfly:6379/0
@@ -62,6 +72,11 @@ services:
       # The trained artifact histogram is the PSI baseline, read from the
       # scoring model directory so governance measures against the shipped model.
       - ./services/scoring/engine/models:/etc/credivect/models:ro
+    # Lets an identity provider running on the developer's machine, outside this
+    # network, be reached by name from inside the container on Linux as well as
+    # on Docker Desktop.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy

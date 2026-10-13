@@ -8,6 +8,7 @@ import (
 	"credivect/core/internal/domain"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func (r *Repository) GetUserByEmail(ctx context.Context, email string) (domain.User, error) {
@@ -53,6 +54,41 @@ func (r *Repository) LinkUserToApplicant(ctx context.Context, userID, applicantI
 		return false, err
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// ErrEmailTaken is the refusal to merge two identities that happen to share an
+// email address: the account already exists under a different id, and adopting a
+// remote subject into it would hand over a credit record the operator linked by
+// password.
+var ErrEmailTaken = errors.New("this email address is already claimed by another account")
+
+// federatedPasswordHash is a value bcrypt can never verify against: a real hash
+// is at least 60 characters and starts with the "$2" identifier.
+const federatedPasswordHash = "!"
+
+// ProvisionFederatedUser creates or refreshes the account row behind a principal
+// authenticated by an external provider.
+//
+// The row is not optional: the underwriter id on a manual review is a foreign
+// key into users, and the borrower's record link lives on that row too, so an
+// externally signed-in session that had no account could authenticate and still
+// be unable to do any work. The password hash is a sentinel that no bcrypt
+// comparison can ever match, which keeps the provider as the only way into the
+// account.
+func (r *Repository) ProvisionFederatedUser(ctx context.Context, u domain.User) error {
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO users (id, email, full_name, role, password_hash, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6)
+		ON CONFLICT (id) DO UPDATE SET full_name = EXCLUDED.full_name, role = EXCLUDED.role`,
+		u.ID, u.Email, u.FullName, u.Role, federatedPasswordHash, u.CreatedAt)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return ErrEmailTaken
+		}
+		return err
+	}
+	return nil
 }
 
 func (r *Repository) UpsertUser(ctx context.Context, u domain.User) error {

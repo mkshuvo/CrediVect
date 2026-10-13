@@ -20,6 +20,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -818,6 +819,194 @@ func (h *harness) checkValidation() {
 	}
 }
 
+// idpToken asks the development identity provider for a credential. It is a
+// plain text body because the whole point is that nothing in this service minted
+// the token.
+func (h *harness) idpToken(idpURL string, params ...string) (string, error) {
+	resp, err := h.client.Get(idpURL + "/token?" + strings.Join(params, "&"))
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 32<<10))
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("HTTP %d, body started %q", resp.StatusCode, truncate(string(body), 80))
+	}
+	return strings.TrimSpace(string(body)), nil
+}
+
+var uuidv5Re = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
+// checkFederatedSession drives the delegated identity path against the running
+// stack. The unit tests prove the cryptographic decisions; only a live run can
+// show that a subject string from another authority becomes a real account row
+// in Postgres, that the foreign keys to it hold, and that the local provider is
+// still accepted alongside it.
+func (h *harness) checkFederatedSession(idpURL, localStaffToken, knownCaseID string) {
+	idpURL = strings.TrimRight(idpURL, "/")
+	suffix := randomHex(4)
+
+	deskToken, err := h.idpToken(idpURL,
+		"role=UNDERWRITER",
+		"sub=e2e-desk-"+suffix,
+		"email=desk."+suffix+"@partners.example",
+		"name=Desk%20Analyst")
+	if err != nil {
+		h.fail("the identity provider is reachable", err)
+		return
+	}
+	h.ok("the identity provider is reachable", idpURL)
+
+	raw, err := h.call(http.MethodGet, "/api/v1/auth/me", nil, http.StatusOK, bearer(deskToken))
+	if err != nil {
+		h.fail("a token signed by the identity provider opens a session", err)
+		return
+	}
+	var me struct {
+		ID       string `json:"id"`
+		Email    string `json:"email"`
+		Name     string `json:"name"`
+		Role     string `json:"role"`
+		Provider string `json:"provider"`
+	}
+	if err := json.Unmarshal(raw, &me); err != nil {
+		h.fail("the delegated session profile parsed", err)
+		return
+	}
+	if me.Provider != "oidc" || me.Role != "UNDERWRITER" {
+		h.fail("the delegated session reports its provider and role",
+			fmt.Errorf("provider %q role %q", me.Provider, me.Role))
+		return
+	}
+	h.ok("a token signed by the identity provider opens a session", "provider "+me.Provider+" role "+me.Role)
+
+	// The provider's subject is "e2e-desk-<hex>", which is not a UUID; the
+	// account id has to be the derived one or nothing downstream can key on it.
+	if !uuidv5Re.MatchString(me.ID) {
+		h.fail("the federated subject maps to a UUID account id", fmt.Errorf("id %q", me.ID))
+	} else {
+		h.ok("the federated subject maps to a UUID account id", me.ID)
+	}
+
+	if _, err := h.call(http.MethodGet, "/api/v1/applications", nil, http.StatusOK, bearer(deskToken)); err != nil {
+		h.fail("an externally authenticated underwriter can open the queue", err)
+	} else {
+		h.ok("an externally authenticated underwriter can open the queue")
+	}
+
+	detailRaw, err := h.call(http.MethodGet, "/api/v1/applications/get?id="+knownCaseID, nil,
+		http.StatusOK, bearer(deskToken))
+	if err != nil {
+		h.fail("an externally authenticated underwriter sees the staff view of a case", err)
+	} else {
+		record, err := decodeApplication(detailRaw)
+		if err != nil {
+			h.fail("the delegated staff read parsed", err)
+		} else if incomeOf(record) == 0 {
+			h.fail("the delegated staff read is unredacted", fmt.Errorf("income %d", incomeOf(record)))
+		} else {
+			h.ok("an externally authenticated underwriter sees the staff view of a case",
+				fmt.Sprintf("income %d", incomeOf(record)))
+		}
+	}
+
+	// Delegated authentication has to be additive: the seeded accounts and every
+	// borrower session still sign in against the local secret.
+	if _, err := h.call(http.MethodGet, "/api/v1/applications", nil, http.StatusOK,
+		bearer(localStaffToken)); err != nil {
+		h.fail("the local provider still authenticates beside the identity provider", err)
+	} else {
+		h.ok("the local provider still authenticates beside the identity provider")
+	}
+
+	roleless, err := h.idpToken(idpURL, "no_role=true", "sub=e2e-nobody-"+suffix)
+	if err != nil {
+		h.fail("a roleless token could be minted", err)
+	} else if _, err := h.call(http.MethodGet, "/api/v1/auth/me", nil, http.StatusForbidden,
+		bearer(roleless)); err != nil {
+		h.fail("a genuine identity with no platform role is forbidden, not unauthenticated", err)
+	} else {
+		h.ok("a genuine identity with no platform role is forbidden, not unauthenticated")
+	}
+
+	tampered := deskToken[:len(deskToken)-2] + "AQ"
+	if _, err := h.call(http.MethodGet, "/api/v1/applications", nil, http.StatusUnauthorized,
+		bearer(tampered)); err != nil {
+		h.fail("a tampered provider signature is rejected", err)
+	} else {
+		h.ok("a tampered provider signature is rejected")
+	}
+
+	// The account row a federated borrower gets is created on the fly. Filing
+	// while signed in is what links it to the credit record, and the link is a
+	// foreign key into users, so this single check proves provisioning reached
+	// the database rather than only the request context.
+	borrowerSSN := "7" + randomDigits(8)
+	borrowerEmail := "federated." + suffix + "@example.com"
+	idpBorrower, err := h.idpToken(idpURL,
+		"role=BORROWER",
+		"sub=e2e-borrower-"+suffix,
+		"email="+borrowerEmail,
+		"name=Federated%20Borrower")
+	if err != nil {
+		h.fail("a borrower token could be minted", err)
+		return
+	}
+	filed, err := h.submit(originationRequest(borrowerSSN, borrowerEmail, 615000), idpBorrower)
+	if err != nil {
+		h.fail("an externally authenticated borrower can originate", err)
+		return
+	}
+	h.ok("an externally authenticated borrower can originate", "case "+filed.Application.ID)
+
+	queueRaw, err := h.call(http.MethodGet, "/api/v1/me/applications", nil, http.StatusOK, bearer(idpBorrower))
+	if err != nil {
+		h.fail("the federated borrower has a personal queue", err)
+		return
+	}
+	var queue struct {
+		Applications []domain.CreditApplication `json:"applications"`
+		Count        int                        `json:"count"`
+		Linked       bool                       `json:"applicant_linked"`
+	}
+	if err := json.Unmarshal(queueRaw, &queue); err != nil {
+		h.fail("the federated borrower queue parsed", err)
+		return
+	}
+	found := false
+	for _, a := range queue.Applications {
+		if a.ID == filed.Application.ID {
+			found = true
+		}
+	}
+	if !queue.Linked || !found {
+		h.fail("the account provisioned for the federated subject owns the case it filed",
+			fmt.Errorf("linked=%t count=%d", queue.Linked, queue.Count))
+		return
+	}
+	h.ok("the account provisioned for the federated subject owns the case it filed", fmt.Sprintf("%d case(s)", queue.Count))
+
+	ownerRaw, err := h.call(http.MethodGet, "/api/v1/applications/get?id="+filed.Application.ID, nil,
+		http.StatusOK, bearer(idpBorrower))
+	if err != nil {
+		h.fail("the federated owner reads their own record", err)
+		return
+	}
+	owner, err := decodeApplication(ownerRaw)
+	if err != nil {
+		h.fail("the federated owner read parsed", err)
+		return
+	}
+	if incomeOf(owner) != 615000 {
+		h.fail("the federated owner sees their own unredacted data", fmt.Errorf("income %d", incomeOf(owner)))
+		return
+	}
+	h.ok("the federated owner sees their own unredacted data", "income 615000")
+}
+
 func (h *harness) summary() int {
 	fmt.Printf("\n%d checks passed, %d failed\n", h.passed, h.failed)
 	if h.failed > 0 {
@@ -909,6 +1098,14 @@ func main() {
 	}
 
 	h.checkGovernance(staffToken, adminToken)
+
+	// Delegated identity needs a provider in front of the core service, so it is
+	// opt-in rather than a check that fails on a stack that never asked for one.
+	if idpURL := strings.TrimSpace(os.Getenv("E2E_IDP_URL")); idpURL != "" {
+		h.checkFederatedSession(idpURL, staffToken, anon.Application.ID)
+	} else {
+		fmt.Print("\nSKIP  delegated identity checks: run a dev-idp, point AUTH_MODE=oidc at it, and set E2E_IDP_URL\n")
+	}
 
 	os.Exit(h.summary())
 }

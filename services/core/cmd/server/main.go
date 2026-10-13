@@ -72,12 +72,30 @@ func run() error {
 		return err
 	}
 	tokens := auth.NewTokenService(cfg.JWTSecret, cfg.JWTTTL)
+	verifiers := []auth.Verifier{tokens}
+	if cfg.AuthMode == "oidc" {
+		idp, err := auth.NewIDTokenVerifier(auth.OIDCSettings{
+			Issuer:    cfg.OIDCIssuer,
+			JWKSURL:   cfg.OIDCJWKSURL,
+			Audience:  cfg.OIDCAudience,
+			RoleClaim: cfg.OIDCRoleClaim,
+			KeyTTL:    cfg.OIDCKeyTTL,
+
+			AllowCleartext: cfg.OIDCCleartext,
+		})
+		if err != nil {
+			return err
+		}
+		verifiers = append(verifiers, idp)
+		log.Printf("accepting tokens from %s (audience %s, role claim %s)",
+			cfg.OIDCIssuer, cfg.OIDCAudience, cfg.OIDCRoleClaim)
+	}
 
 	acts := workflow.NewActivities(repo, scoring, bureau.NewDeterministicProvider(), publisher)
 	workerErr := make(chan error, 1)
 	go func() { workerErr <- runtime.StartWorker(ctx, acts) }()
 
-	server := api.NewServer(repo, dragonfly, scoring, runtime, publisher, tokens, hasher, cfg)
+	server := api.NewServer(repo, dragonfly, scoring, runtime, publisher, tokens, verifiers, hasher, cfg)
 	httpServer := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           server.CORS(server.Routes()),

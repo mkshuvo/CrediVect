@@ -43,7 +43,7 @@ const (
 // A lookup failure is treated as "no access": an unknown id and a database
 // problem both end in 401 rather than revealing which applications exist.
 func (s *Server) authorizeBorrowerRead(w http.ResponseWriter, r *http.Request, applicationID string) (readScope, bool) {
-	if claims, err := auth.From(r.Context()); err == nil {
+	if claims, err := s.principal(r); err == nil {
 		if claims.Role == auth.RoleUnderwriter || claims.Role == auth.RoleAdmin {
 			return scopeStaff, true
 		}

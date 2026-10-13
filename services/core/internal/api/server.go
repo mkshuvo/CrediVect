@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"credivect/core/internal/auth"
@@ -20,13 +21,19 @@ import (
 // computes risk, mints a hash, or holds state: it validates, delegates and
 // serialises.
 type Server struct {
-	repo       *storage.Repository
-	cache      *cache.DragonflyClient
-	scoring    *client.ScoringClient
-	temporal   *workflow.Runtime
-	publisher  *events.Publisher
-	tokens     *auth.TokenService
-	guard      *auth.Middleware
+	repo      *storage.Repository
+	cache     *cache.DragonflyClient
+	scoring   *client.ScoringClient
+	temporal  *workflow.Runtime
+	publisher *events.Publisher
+	tokens    *auth.TokenService
+	guard     *auth.Middleware
+	// federated remembers which externally authenticated subjects already have
+	// an account row, so a burst of requests from one signed-in person does not
+	// become a burst of writes. It is not an authorisation cache: the role in
+	// every response comes from the token just verified, so an identity provider
+	// that drops a role takes it away on the next request.
+	federated  sync.Map
 	hasher     *security.Hasher
 	cfg        *config.Config
 	bureauName string
@@ -36,7 +43,7 @@ type Server struct {
 
 func NewServer(repo *storage.Repository, c *cache.DragonflyClient, sc *client.ScoringClient,
 	runtime *workflow.Runtime, publisher *events.Publisher, tokens *auth.TokenService,
-	hasher *security.Hasher, cfg *config.Config) *Server {
+	verifiers []auth.Verifier, hasher *security.Hasher, cfg *config.Config) *Server {
 
 	return &Server{
 		repo:       repo,
@@ -45,7 +52,7 @@ func NewServer(repo *storage.Repository, c *cache.DragonflyClient, sc *client.Sc
 		temporal:   runtime,
 		publisher:  publisher,
 		tokens:     tokens,
-		guard:      auth.NewMiddleware(tokens),
+		guard:      auth.NewMiddleware(verifiers...),
 		hasher:     hasher,
 		cfg:        cfg,
 		bureauName: bureau.NewDeterministicProvider().Name(),

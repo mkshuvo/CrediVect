@@ -18,8 +18,9 @@ type loginRequest struct {
 }
 
 // HandleLogin verifies the credential against a bcrypt hash and mints an HS256
-// token carrying the role. The local provider is the only one wired; swapping in
-// Clerk or Auth0 replaces TokenService with a JWKS verifier, not these handlers.
+// token carrying the role. This is the local provider; AUTH_MODE=oidc adds an
+// external identity provider alongside it rather than replacing it, so seeded
+// accounts and borrower accounts keep signing in here.
 func (s *Server) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -62,12 +63,20 @@ func (s *Server) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) HandleMe(w http.ResponseWriter, r *http.Request) {
 	claims, err := s.principal(r)
-	if err != nil {
+	switch {
+	case errors.Is(err, errEmailClaimed):
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	case errors.Is(err, auth.ErrNoClaims):
 		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, "could not open a session for this identity")
 		return
 	}
 	body := map[string]any{
 		"id": claims.UserID, "email": claims.Email, "name": claims.Name, "role": claims.Role,
+		"provider": claims.Provider,
 	}
 	// The applicant link is read live rather than carried in the session: a
 	// borrower who originates their first case while signed in should see it as

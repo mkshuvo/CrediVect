@@ -97,6 +97,28 @@ keeps the "no silently abandoned applicant" promise the audit chain can prove.
   process. Both keys derive from `SSN_ENCRYPTION_KEY`
   (`internal/security`).
 
+### Sessions and delegated identity
+
+Two providers can be active at once. `AUTH_MODE=local` (the default) verifies
+the HS256 sessions core issues from bcrypt-checked passwords. `AUTH_MODE=oidc`
+additionally accepts an RS/EC-signed ID token from an external identity
+provider, validated against that provider's published JWKS
+(`internal/auth/jwks.go`); local sessions keep working either way, so the
+seeded accounts and the existing stack are unaffected.
+
+A provider's subject is an opaque string of its own choosing, while the account
+tables key on `UUID`. The mapping is therefore derived rather than stored:
+`users.id` is UUIDv5 of `issuer + 0x00 + sub` in the RFC 4122 DNS namespace
+(`internal/domain/uuidv5.go`), so the same person lands on the same account
+across replicas, restarts and re-logins. The row is created on first request
+with the password hash set to `"!"`, which bcrypt can never match, so a
+federated account cannot be signed into from the password form. An email that
+already belongs to another account is refused rather than merged.
+
+The role comes from a claim in the token that was just verified. What the caller
+may *read* still comes from the database: a delegated identity is only ever an
+underwriter, an admin or a borrower whose account owns the record.
+
 ### Audit chain
 
 `internal/storage/audit_test.go` pins the exact format:
@@ -170,6 +192,26 @@ image also self-heals (it trains during `docker compose build scoring` if the
 artifacts are missing), but `make train` is what writes them back into the
 working tree, which is where core reads its PSI baseline from.
 
+### Delegated sign-in (optional)
+
+The stack ships with `AUTH_MODE=local`. To see the OIDC path instead, start the
+development provider and point core at it:
+
+```bash
+make idp                      # 127.0.0.1:9355: signs ID tokens, publishes /jwks.json
+AUTH_MODE=oidc \
+  OIDC_ISSUER=http://host.docker.internal:9355 \
+  OIDC_JWKS_URL=http://host.docker.internal:9355/.well-known/jwks.json \
+  OIDC_ALLOW_CLEARTEXT_KEYS=true \
+  docker compose up -d --force-recreate core
+E2E_IDP_URL=http://127.0.0.1:9355 make e2e
+```
+
+`host.docker.internal` is how the container reaches the provider running on the
+host; `OIDC_ISSUER` must match the `iss` the tokens carry exactly. Local logins
+keep working throughout - the two verifiers are consulted in order, and the
+first acceptance wins.
+
 ### Golden path to walk by hand
 
 1. `/apply` - submit as a fresh borrower.
@@ -219,6 +261,7 @@ against the running stack and fails on the first broken invariant; see
 | `make test-scoring` | `unittest discover` inside the scoring image |
 | `make bench` | Go benchmarks for the in-process request path (`BENCHTIME=1s make bench` for a longer run) |
 | `make e2e` | Drive one complete loan through the running stack; needs `make up` and `make seed` |
+| `make idp` | Run the development-only OIDC provider on `127.0.0.1:9355` (`AUTH_MODE=oidc` demo and e2e) |
 
 Prefer targeted recreates over `make down`: `docker compose up -d
 --force-recreate core` restarts one service without releasing the Postgres and
@@ -383,11 +426,30 @@ capacities, exiting non-zero on the first broken invariant. Forty-two checks:
 - scoring sits inside its SLA on the measured population, drift recomputes for
   an admin and is refused to an underwriter.
 
+Eleven more run when core is pointed at a real identity provider - start
+`make idp`, set `AUTH_MODE=oidc` plus `OIDC_*` on the core container, and give
+the client `E2E_IDP_URL`. Without them the suite prints a `SKIP` line naming
+that setup instead of quietly passing:
+
+- a token minted by the provider opens a session, and its `sub` provisions an
+  account whose id is the UUIDv5 of `issuer + sub`;
+- a garbage token, a token for another audience and a token with no role claim
+  are each refused - the last with 403, because the identity is genuine and
+  only the authorisation is missing;
+- the federated borrower originates, and the capability token plus the account
+  both reach the same record;
+- a federated underwriter reads the queue, and a federated identity cannot read
+  someone else's case.
+
 ```
 $ make e2e
 PASS  the audit chain verifies (1032 entries, head 91fc3aef7799809f...)
 PASS  scoring stays inside its SLA (p50 1.48 ms, p95 3.11 ms, p99 15.40 ms over 256 runs (target 15 ms))
 42 checks passed, 0 failed
+RESULT: PASS
+
+$ E2E_IDP_URL=http://127.0.0.1:9355 make e2e     # with AUTH_MODE=oidc on core
+53 checks passed, 0 failed
 RESULT: PASS
 ```
 
@@ -459,7 +521,9 @@ Real and load-bearing:
 - Postgres persistence, optimistic concurrency, bitemporal bureau snapshots.
 - Temporal saga execution with per-activity retry policies, a durable 72-hour
   review timer, signals and queries.
-- HS256 sessions with bcrypt-verified passwords and role gates.
+- HS256 sessions with bcrypt-verified passwords and role gates, and an
+  independent OIDC verifier that checks RS/EC ID tokens against the provider's
+  JWKS.
 - AES-256-GCM SSN sealing plus HMAC blind index.
 - Append-only Merkle audit chain, hash-verified on demand.
 - PSI drift measurement against the shipped training baseline.
@@ -482,8 +546,11 @@ Simulated or scoped down, deliberately:
   committed only after the row lands, deduplicated on the `(partition, offset)`
   primary key. It is a read model for this repo rather than a feed into another
   system - `GET :8090/events?application_id=` is where the stream comes back.
-- **Auth is the local HS256 provider only.** `AUTH_MODE` exists to make the
-  boundary explicit; no OIDC/SAML integration is wired up.
+- **The OIDC provider is `cmd/dev-idp`, and it is a test fixture.** It mints
+  RS256 tokens with a key generated at boot and publishes the matching JWKS,
+  which is enough to exercise the verifier end to end. It has no consent screen,
+  no user directory and no durable keys, and `AUTH_MODE=oidc` against a real
+  provider is the supported path. SAML is not implemented.
 - Single-node Postgres/Temporal/Redpanda, no TLS between containers, no
   horizontal scaling, and schema changes are one idempotent SQL file rather than
   a migration tool.
@@ -549,6 +616,22 @@ attacker can make. An account that already owns a record keeps it, so filing
 under a different identifier cannot point an existing account at somebody else's
 file.
 
+Accepting a third party's signature is a different trust boundary from issuing
+your own, so `AUTH_MODE=oidc` is deliberately narrow. `OIDC_JWKS_URL` must be
+https unless it is loopback, and even then only with `OIDC_ALLOW_CLEARTEXT_KEYS`
+set explicitly. Keys are selected by the token's `kid` header - a token that
+names no key id, or one whose `kid` the provider does not publish, is refused -
+and the algorithm must agree with the key type: RSA and EC signatures only, from
+a fixed allowlist, never `none`, never an `oct` key, and never an RSA public key
+reinterpreted as an HMAC secret. RSA keys under 2048 bits and EC keys on the
+wrong curve for their algorithm are rejected, as is a key set document over
+1 MiB. `iss`, `aud` and `exp` are all required, with 30 seconds of leeway.
+Rotation needs no redeploy: the set is cached for `OIDC_KEY_TTL` (default 5m),
+refreshes are rate limited to one per 30 seconds, and an unknown `kid` triggers
+a refetch. A token whose role claim names no known role is answered 403, not 401
+- the identity verified, and what is missing is authorisation - while a forged or
+expired token still gets 401.
+
 The token is 256 bits of randomness, stored only as a SHA-256 digest and compared
 in constant time, so a leaked table cannot be used to read cases. The UI carries
 it in the URL fragment (`/status/<id>#t=...`), which never reaches a server, and
@@ -577,6 +660,7 @@ services/core/             Go API, repository, saga, activities, auth, audit cha
   cmd/ingest/              Kafka consumer service and its read-only HTTP API
   cmd/seed/                Seeder (users, model version, applications)
   cmd/e2e/                 End-to-end validation client (make e2e)
+  cmd/dev-idp/             Development-only OIDC provider: signs tokens, serves JWKS
   internal/{api,auth,bureau,cache,client,config,domain,events,governance,ingest,security,storage,workflow}
   tests/                   Money, rounding and UUIDv7 tests
 services/scoring/          Python gRPC scoring service

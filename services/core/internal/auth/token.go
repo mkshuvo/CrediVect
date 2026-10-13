@@ -20,7 +20,27 @@ type Claims struct {
 	Email  string `json:"email"`
 	Name   string `json:"name"`
 	Role   string `json:"role"`
+	// Provider and ProviderIssuer record who vouched for this principal. They
+	// are set by the verifier that accepted the token, never read from a token
+	// payload, so a self-asserted "oidc" cannot appear in a session. The name
+	// avoids the embedded registered "iss" claim, which must keep marshalling.
+	Provider       string `json:"-"`
+	ProviderIssuer string `json:"-"`
+	// Subject is the identity provider's own user id when one vouched for this
+	// principal. UserID is the platform account row it maps to, which is what
+	// every query and foreign key uses; keeping both means a support answer can
+	// name the person in the provider's terms without losing the local id.
+	Subject string `json:"-"`
 	jwt.RegisteredClaims
+}
+
+// Verifier is one way a bearer credential can be authenticated. The core service
+// runs a chain of them: the local issuer always verifies its own minted tokens,
+// and AUTH_MODE=oidc adds a provider whose keys are published rather than
+// shared. Adding Clerk, Auth0 or Entra ID is a new implementation of this
+// interface plus configuration, not a change to a handler.
+type Verifier interface {
+	Verify(raw string) (*Claims, error)
 }
 
 type TokenService struct {
@@ -33,9 +53,9 @@ func NewTokenService(secret string, ttl time.Duration) *TokenService {
 	return &TokenService{secret: []byte(secret), ttl: ttl, issuer: "credivect-core"}
 }
 
-// Issue mints an HS256 token. AUTH_MODE=local is the only provider wired; the
-// validator takes keys from the same secret, so a Clerk or Auth0 deployment
-// replaces this service rather than the handlers.
+// Issue mints an HS256 token for a local account. The remote provider never
+// mints anything: it only verifies tokens its own authority signed, which is why
+// AUTH_MODE=oidc adds a verifier and leaves this path as it is.
 func (s *TokenService) Issue(c Claims) (string, time.Time, error) {
 	exp := time.Now().UTC().Add(s.ttl)
 	c.RegisteredClaims = jwt.RegisteredClaims{
@@ -71,5 +91,11 @@ func (s *TokenService) Parse(raw string) (*Claims, error) {
 	if claims.UserID == "" || claims.Role == "" {
 		return nil, fmt.Errorf("token is missing subject or role")
 	}
+	claims.Provider = ProviderLocal
 	return claims, nil
+}
+
+// Verify lets the local issuer stand in the verifier chain beside a remote one.
+func (s *TokenService) Verify(raw string) (*Claims, error) {
+	return s.Parse(raw)
 }

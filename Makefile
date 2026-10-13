@@ -1,4 +1,4 @@
-.PHONY: up down build rebuild ps logs health test test-go test-scoring bench e2e seed train proto migrate
+.PHONY: up down build rebuild ps logs health test test-go test-scoring bench e2e idp seed train proto migrate
 
 # Same overrides docker compose reads; gitignored, so fall back to the defaults.
 -include .env
@@ -73,3 +73,10 @@ bench:
 # `make up` and `make seed` first.
 e2e:
 	cd services/core && go run ./cmd/e2e
+
+# Serves a development identity provider on 127.0.0.1:9355, so delegated
+# authentication can be exercised without an Auth0 tenant. Run it in a second
+# terminal, recreate core with AUTH_MODE=oidc pointed at it, then run
+# E2E_IDP_URL=http://host.docker.internal:9355 make e2e
+idp:
+	cd services/core && go run ./cmd/dev-idp

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -19,7 +20,7 @@ import (
 // originated. Failing to link is not a reason to fail the submission: the case is
 // booked, its status token works, and the account view simply stays empty.
 func (s *Server) linkBorrowerAccount(r *http.Request, applicantID string) {
-	claims, err := auth.From(r.Context())
+	claims, err := s.principal(r)
 	if err != nil || claims.Role != auth.RoleBorrower {
 		return
 	}
@@ -38,7 +39,11 @@ func (s *Server) linkBorrowerAccount(r *http.Request, applicantID string) {
 // Unlike the staff queue this one is scoped to a person, and the records come
 // back unredacted because they are the caller's own credit file.
 func (s *Server) HandleMyApplications(w http.ResponseWriter, r *http.Request) {
-	claims, err := auth.From(r.Context())
+	claims, err := s.principal(r)
+	if errors.Is(err, errEmailClaimed) {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
 	if err != nil || claims.Role != auth.RoleBorrower {
 		writeError(w, http.StatusUnauthorized, "a borrower session is required")
 		return

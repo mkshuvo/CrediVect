@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"credivect/core/internal/auth"
 	"credivect/core/internal/domain"
 	"credivect/core/internal/security"
+	"credivect/core/internal/storage"
 	"credivect/core/internal/workflow"
 )
 
@@ -371,13 +373,48 @@ func (s *Server) HandleWorkflowState(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, state)
 }
 
+// principal returns the caller's verified claims, creating the account row for a
+// principal authenticated by an external identity provider the first time that
+// subject is seen. It is the single point every authenticated handler passes
+// through, which is what makes just-in-time provisioning impossible to forget.
 func (s *Server) principal(r *http.Request) (*auth.Claims, error) {
-	c, err := auth.From(r.Context())
+	claims, err := auth.From(r.Context())
 	if err != nil {
 		return nil, err
 	}
-	return c, nil
+	if claims.Provider != auth.ProviderOIDC {
+		return claims, nil
+	}
+	// UserID is already the derived account id; the verifier maps a provider
+	// subject onto it so that nothing downstream has to know the difference.
+	if _, provisioned := s.federated.Load(claims.UserID); provisioned {
+		return claims, nil
+	}
+	email := claims.Email
+	if email == "" {
+		// users.email is not null and a provider may well omit the claim. The
+		// address is unmailable by construction: a reserved top-level domain.
+		email = claims.UserID + "@federated.invalid"
+	}
+	err = s.repo.ProvisionFederatedUser(r.Context(), domain.User{
+		ID: claims.UserID, Email: email, FullName: claims.Name, Role: claims.Role, CreatedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		if errors.Is(err, storage.ErrEmailTaken) {
+			return nil, errEmailClaimed
+		}
+		return nil, err
+	}
+	s.federated.Store(claims.UserID, struct{}{})
+	slog.Info("provisioned an account for an externally authenticated principal",
+		"user_id", claims.UserID, "subject", claims.Subject, "issuer", claims.ProviderIssuer, "role", claims.Role)
+	return claims, nil
 }
+
+// errEmailClaimed is the deliberate refusal to merge identities. A remote subject
+// whose email matches a local account could otherwise inherit that account's
+// credit record on the strength of a claim the other party's provider controls.
+var errEmailClaimed = errors.New("the email address in your identity token is already claimed by a local account; sign in there instead")
 
 func normaliseEmployment(v string) string {
 	v = strings.ToUpper(strings.TrimSpace(v))

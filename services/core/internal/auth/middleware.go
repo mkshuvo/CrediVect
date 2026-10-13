@@ -16,12 +16,16 @@ var ErrNoClaims = errors.New("no principal in context")
 // Middleware authenticates requests that carry a bearer token and gates the
 // privileged routes. Submitting an application may stay anonymous; reading the
 // underwriter queue, adjudicating, and governance all require a role.
+//
+// A credential is offered to each verifier in turn and the first acceptance
+// wins, so a deployment that runs local accounts and an external provider at the
+// same time needs no routing decision in front of the handlers.
 type Middleware struct {
-	tokens *TokenService
+	verifiers []Verifier
 }
 
-func NewMiddleware(tokens *TokenService) *Middleware {
-	return &Middleware{tokens: tokens}
+func NewMiddleware(verifiers ...Verifier) *Middleware {
+	return &Middleware{verifiers: verifiers}
 }
 
 func (m *Middleware) Authenticate(next http.Handler) http.Handler {
@@ -31,12 +35,24 @@ func (m *Middleware) Authenticate(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		claims, err := m.tokens.Parse(raw)
-		if err != nil {
-			writeJSONError(w, http.StatusUnauthorized, "invalid or expired credentials")
+		var unauthorised error
+		for _, verifier := range m.verifiers {
+			claims, err := verifier.Verify(raw)
+			if err == nil {
+				next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), claimsKey, claims)))
+				return
+			}
+			// A genuine identity that simply has no role here is a different
+			// answer from a forged token, and the caller can act on it.
+			if errors.Is(err, ErrNoRole) {
+				unauthorised = err
+			}
+		}
+		if unauthorised != nil {
+			writeJSONError(w, http.StatusForbidden, "signed in, but not authorised: this identity has no role on the platform")
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), claimsKey, claims)))
+		writeJSONError(w, http.StatusUnauthorized, "invalid or expired credentials")
 	})
 }
 
