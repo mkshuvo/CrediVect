@@ -28,7 +28,7 @@ var incomeBands = [][2]int64{
 }
 
 func originate(ctx context.Context, repo *storage.Repository, hasher *security.Hasher,
-	runtime *workflow.Runtime, rng *rand.Rand, index int) (domain.CreditApplication, error) {
+	runtime *workflow.Runtime, rng *rand.Rand, index int) (domain.CreditApplication, string, error) {
 
 	band := incomeBands[index%len(incomeBands)]
 	income := band[0] + int64(rng.Int63n(band[1]-band[0]))
@@ -43,7 +43,7 @@ func originate(ctx context.Context, repo *storage.Repository, hasher *security.H
 	blind := hasher.BlindIndex(ssn)
 	sealed, err := hasher.Encrypt(ssn)
 	if err != nil {
-		return domain.CreditApplication{}, err
+		return domain.CreditApplication{}, "", err
 	}
 
 	now := time.Now().UTC().Add(-time.Duration(index) * time.Minute)
@@ -54,7 +54,7 @@ func originate(ctx context.Context, repo *storage.Repository, hasher *security.H
 		EmploymentStatus: "EMPLOYED", CreatedAt: now,
 	}
 	if err := repo.InsertApplicant(ctx, applicant, blind, sealed); err != nil {
-		return domain.CreditApplication{}, fmt.Errorf("insert applicant: %w", err)
+		return domain.CreditApplication{}, "", fmt.Errorf("insert applicant: %w", err)
 	}
 
 	app := domain.CreditApplication{
@@ -65,19 +65,30 @@ func originate(ctx context.Context, repo *storage.Repository, hasher *security.H
 	}
 	app.WorkflowID = "underwriting-" + app.ID
 	if err := repo.InsertApplication(ctx, app); err != nil {
-		return app, fmt.Errorf("insert application: %w", err)
+		return app, "", fmt.Errorf("insert application: %w", err)
+	}
+
+	// The seeder mints the same credential the API issues at origination, so a
+	// seeded case is walkable from the borrower's side rather than only from the
+	// underwriter's.
+	statusToken, err := security.NewStatusToken()
+	if err != nil {
+		return app, "", fmt.Errorf("status token: %w", err)
+	}
+	if err := repo.SetStatusTokenHash(ctx, app.ID, security.HashStatusToken(statusToken)); err != nil {
+		return app, "", fmt.Errorf("store status token: %w", err)
 	}
 	if _, err := repo.AppendAudit(ctx, app.ID, "APPLICATION_SUBMITTED", "SEED", map[string]any{
 		"requested_amount_cents": amount, "loan_term_months": term, "loan_purpose": app.LoanPurpose,
 	}); err != nil {
-		return app, fmt.Errorf("audit submit: %w", err)
+		return app, "", fmt.Errorf("audit submit: %w", err)
 	}
 	if _, runID, err := runtime.StartUnderwriting(ctx, app.ID); err != nil {
-		return app, fmt.Errorf("start saga: %w", err)
+		return app, "", fmt.Errorf("start saga: %w", err)
 	} else if runID == "" {
-		return app, fmt.Errorf("saga returned no run id")
+		return app, "", fmt.Errorf("saga returned no run id")
 	}
-	return app, nil
+	return app, statusToken, nil
 }
 
 func lower(s string) string {

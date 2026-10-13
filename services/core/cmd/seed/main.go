@@ -95,12 +95,14 @@ func main() {
 	}
 
 	submitted := 0
+	tokens := map[string]string{}
 	for i := 0; i < *count; i++ {
-		app, err := originate(ctx, repo, hasher, runtime, rng, i)
+		app, statusToken, err := originate(ctx, repo, hasher, runtime, rng, i)
 		if err != nil {
 			log.Printf("seed: application %d failed: %v", i, err)
 			continue
 		}
+		tokens[app.ID] = statusToken
 		submitted++
 		log.Printf("originated %s amount=%d cents term=%d workflow=%s", app.ID, app.RequestedAmountCents, app.LoanTermMonths, app.WorkflowID)
 	}
@@ -111,7 +113,29 @@ func main() {
 	// automated and manual outcomes.
 	signalOpenReviews(ctx, repo, runtime)
 
+	printBorrowerLinks(ctx, repo, tokens)
+
 	log.Printf("seed complete: %d applications originated against model %s", submitted, mv.Version)
+}
+
+// printBorrowerLinks hands over one working borrower link per decided outcome.
+// The status page and the adverse action notice are only reachable with the
+// capability token minted at origination, so without this the seeded book could
+// be walked from the underwriter's side alone.
+func printBorrowerLinks(ctx context.Context, repo *storage.Repository, tokens map[string]string) {
+	for _, status := range []string{"DECLINED", "APPROVED"} {
+		apps, err := repo.ListApplications(ctx, status, "", 25, 0)
+		if err != nil {
+			log.Printf("seed: could not list %s applications: %v", status, err)
+			return
+		}
+		for _, app := range apps {
+			if tok, ok := tokens[app.ID]; ok {
+				log.Printf("borrower link (%s): /status/%s#t=%s", status, app.ID, tok)
+				break
+			}
+		}
+	}
 }
 
 func seedUsers(ctx context.Context, repo *storage.Repository) error {

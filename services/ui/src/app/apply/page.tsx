@@ -142,7 +142,9 @@ export default function LoanOriginationWizard() {
 
     try {
       const result = await api.submitApplication(payload, idempotencyKey);
-      router.push(`/status/${result.application.id}`);
+      // The status token is shown exactly once here; a URL fragment keeps it out
+      // of server access logs and it survives a reload of the status page.
+      router.push(`/status/${result.application.id}#t=${encodeURIComponent(result.status_token)}`);
     } catch (err) {
       if (err instanceof ApiError) {
         setError(err.message);

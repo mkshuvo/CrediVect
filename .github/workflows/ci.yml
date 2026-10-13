@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  go:
+    name: Core API (Go)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: services/core/go.mod
+          cache-dependency-path: services/core/go.sum
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - name: go vet
+        run: go vet ./...
+      - name: build
+        run: go build ./...
+      - name: test
+        run: go test -count=1 ./...
+
+  scoring:
+    name: Scoring engine (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The image trains the model during the build when the artifacts are
+      # missing, so this also proves a clean clone can reach a serving container.
+      - name: Build the scoring image
+        run: docker build -t credivect-scoring ./services/scoring
+      - name: Engine tests
+        run: docker run --rm credivect-scoring python -m unittest discover -s tests -t . -v
+
+  ui:
+    name: Console (Next.js)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: services/ui/package-lock.json
+      - run: npm ci
+      - run: npm run build
+        env:
+          CORE_ORIGIN: http://core:8000
+
+  compose:
+    name: Compose contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate the stack definition
+        run: docker compose config --quiet

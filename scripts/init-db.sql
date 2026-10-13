@@ -38,6 +38,10 @@ CREATE TABLE IF NOT EXISTS credit_applications (
     status VARCHAR(50) NOT NULL DEFAULT 'SUBMITTED'
         CHECK (status IN ('SUBMITTED', 'IN_REVIEW', 'APPROVED', 'DECLINED', 'CANCELLED')),
     workflow_id VARCHAR(128) NOT NULL,
+    -- SHA-256 of the capability token handed to the applicant at submission.
+    -- Only the digest is stored, so the table alone cannot be replayed as
+    -- access to a borrower's status page or adverse action notice.
+    status_token_hash TEXT,
     version BIGINT NOT NULL DEFAULT 1,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -46,6 +50,11 @@ CREATE TABLE IF NOT EXISTS credit_applications (
 CREATE INDEX IF NOT EXISTS idx_credit_apps_applicant ON credit_applications(applicant_id);
 CREATE INDEX IF NOT EXISTS idx_credit_apps_status ON credit_applications(status);
 CREATE INDEX IF NOT EXISTS idx_credit_apps_created ON credit_applications(created_at DESC);
+
+-- Idempotent addition for databases created before borrower reads were
+-- capability-gated; the CREATE TABLE above carries it for a fresh install.
+-- Rows predating this have no digest and so allow no anonymous read at all.
+ALTER TABLE credit_applications ADD COLUMN IF NOT EXISTS status_token_hash TEXT;
 
 CREATE TABLE IF NOT EXISTS bureau_reports (
     id UUID PRIMARY KEY,
@@ -174,6 +183,27 @@ CREATE TABLE IF NOT EXISTS audit_ledger (
 
 CREATE INDEX IF NOT EXISTS idx_audit_ledger_app ON audit_ledger(application_id);
 CREATE INDEX IF NOT EXISTS idx_audit_ledger_time ON audit_ledger(recorded_at);
+
+-- The live projection of the application event stream, written by the ingest
+-- consumer. audit_ledger stays the tamper-evident record; this table exists so
+-- the stream has a destination that can be queried without a Kafka client.
+CREATE TABLE IF NOT EXISTS application_events (
+    kafka_offset BIGINT NOT NULL,
+    kafka_partition INTEGER NOT NULL,
+    event_type VARCHAR(50) NOT NULL,
+    application_id UUID NOT NULL,
+    actor VARCHAR(128) NOT NULL,
+    occurred_at TIMESTAMPTZ NOT NULL,
+    ledger_entry_hash CHAR(64) NOT NULL DEFAULT '',
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    consumed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    -- offset and partition are reserved words in Postgres, so the columns carry
+    -- the kafka_ prefix rather than quoting them in every query.
+    PRIMARY KEY (kafka_partition, kafka_offset)
+);
+
+CREATE INDEX IF NOT EXISTS idx_application_events_app ON application_events(application_id, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_application_events_type ON application_events(event_type, occurred_at DESC);
 
 CREATE TABLE IF NOT EXISTS drift_metrics (
     id UUID PRIMARY KEY,

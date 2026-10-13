@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -11,6 +10,7 @@ import (
 
 	"credivect/core/internal/auth"
 	"credivect/core/internal/domain"
+	"credivect/core/internal/security"
 	"credivect/core/internal/workflow"
 )
 
@@ -134,6 +134,21 @@ func (s *Server) HandleCreateApplication(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// The capability token is the applicant's only credential for the rest of
+	// this case. It is generated here, returned exactly once, and persisted as a
+	// digest so neither a table read nor a backup grants access.
+	statusToken, err := security.NewStatusToken()
+	if err != nil {
+		s.releaseKey(key)
+		writeError(w, http.StatusInternalServerError, "could not issue the application status credential")
+		return
+	}
+	if err := s.repo.SetStatusTokenHash(r.Context(), appID, security.HashStatusToken(statusToken)); err != nil {
+		s.releaseKey(key)
+		writeError(w, http.StatusInternalServerError, "could not store the application status credential")
+		return
+	}
+
 	submitted := map[string]any{
 		"requested_amount_cents": app.RequestedAmountCents, "loan_term_months": app.LoanTermMonths,
 		"loan_purpose": app.LoanPurpose, "currency_code": app.CurrencyCode,
@@ -152,7 +167,10 @@ func (s *Server) HandleCreateApplication(w http.ResponseWriter, r *http.Request)
 	}
 	app.WorkflowID = runID
 
-	response := map[string]any{"application": app, "workflow_id": runID, "status": string(domain.StatusSubmitted)}
+	response := map[string]any{
+		"application": app, "workflow_id": runID, "status": string(domain.StatusSubmitted),
+		"status_token": statusToken,
+	}
 	body, err := json.Marshal(response)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "response encoding failed")
@@ -199,24 +217,26 @@ func (s *Server) HandleGetApplication(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "id query parameter is required")
 		return
 	}
+	staff, ok := s.authorizeBorrowerRead(w, r, id)
+	if !ok {
+		return
+	}
 	app, err := s.repo.GetApplication(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "application not found")
 		return
 	}
-	if _, err := auth.From(r.Context()); errors.Is(err, auth.ErrNoClaims) {
-		app = redactForAnonymous(app)
+	if !staff {
+		app = redactForBorrower(app)
 	}
 	writeJSON(w, http.StatusOK, app)
 }
 
-// redactForAnonymous narrows an application to what a borrower's status page
-// renders. That page is reachable without a session because the origination
-// wizard is anonymous and the applicant only holds a link, so the consumer
-// report detail and the applicant's identifying attributes must not ride along
-// to whoever guesses or intercepts the id. Underwriters and admins present a
-// token and get the full record.
-func redactForAnonymous(app domain.CreditApplication) domain.CreditApplication {
+// redactForBorrower narrows an application to the borrower's own view. The
+// status page needs the score, the decision and the explanations, and none of
+// the underwriting file. That matters because the capability token travels in a
+// URL for the notice download, so it is more exposed than a session would be.
+func redactForBorrower(app domain.CreditApplication) domain.CreditApplication {
 	if app.Applicant != nil {
 		a := *app.Applicant
 		a.ExternalID, a.Email, a.DateOfBirth, a.EmploymentStatus = "", "", "", ""
@@ -308,6 +328,13 @@ func (s *Server) HandleReviewDecision(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) HandleWorkflowState(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "id query parameter is required")
+		return
+	}
+	if _, ok := s.authorizeBorrowerRead(w, r, id); !ok {
+		return
+	}
 	app, err := s.repo.GetApplication(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "application not found")

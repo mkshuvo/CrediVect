@@ -50,20 +50,31 @@ type rightsDisclosure struct {
 	CanRequestReasons    bool `json:"can_request_reasons"`
 }
 
-func (s *Server) loadNotice(r *http.Request) (AdverseActionNotice, domain.CreditApplication, error) {
+// loadNotice assembles the disclosure, or writes the failure response itself and
+// reports false. Each failure carries its own status: an application that exists
+// but has not been scored yet is not the same fact as one that does not exist,
+// and reporting both as 404 sends the borrower looking in the wrong place.
+func (s *Server) loadNotice(w http.ResponseWriter, r *http.Request) (AdverseActionNotice, domain.CreditApplication, bool) {
 	id := strings.TrimSpace(r.URL.Query().Get("id"))
 	if id == "" {
-		return AdverseActionNotice{}, domain.CreditApplication{}, fmt.Errorf("id query parameter is required")
+		writeError(w, http.StatusBadRequest, "id query parameter is required")
+		return AdverseActionNotice{}, domain.CreditApplication{}, false
+	}
+	if _, ok := s.authorizeBorrowerRead(w, r, id); !ok {
+		return AdverseActionNotice{}, domain.CreditApplication{}, false
 	}
 	app, err := s.repo.GetApplication(r.Context(), id)
 	if err != nil {
-		return AdverseActionNotice{}, app, err
+		writeError(w, http.StatusNotFound, "application not found")
+		return AdverseActionNotice{}, app, false
 	}
 	if app.ScoringResult == nil {
-		return AdverseActionNotice{}, app, fmt.Errorf("application %s has not been scored", id)
+		writeError(w, http.StatusConflict, "this application has not been scored yet; the notice is issued with the decision")
+		return AdverseActionNotice{}, app, false
 	}
 	if app.Status != domain.StatusDeclined && app.Status != domain.StatusInReview {
-		return AdverseActionNotice{}, app, fmt.Errorf("an adverse action notice applies to a declined or referred application; this one is %s", app.Status)
+		writeError(w, http.StatusConflict, fmt.Sprintf("an adverse action notice applies to a declined or referred application; this one is %s", app.Status))
+		return AdverseActionNotice{}, app, false
 	}
 	bureauName, bureauAddress := "Unattributed consumer reporting agency", "Address unavailable"
 	if app.BureauReport != nil {
@@ -92,13 +103,12 @@ func (s *Server) loadNotice(r *http.Request) (AdverseActionNotice, domain.Credit
 		notice.Outcome = app.Decision.Outcome
 		notice.DecidedAt = app.Decision.DecisionedAt.UTC().Format("2006-01-02T15:04:05Z")
 	}
-	return notice, app, nil
+	return notice, app, true
 }
 
 func (s *Server) HandleAdverseAction(w http.ResponseWriter, r *http.Request) {
-	notice, _, err := s.loadNotice(r)
-	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+	notice, _, ok := s.loadNotice(w, r)
+	if !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, notice)
@@ -107,9 +117,8 @@ func (s *Server) HandleAdverseAction(w http.ResponseWriter, r *http.Request) {
 // HandleAdverseActionNotice renders the same record as a plain-text letter the
 // borrower can keep, with the statutory disclosures spelled out.
 func (s *Server) HandleAdverseActionNotice(w http.ResponseWriter, r *http.Request) {
-	notice, app, err := s.loadNotice(r)
-	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+	notice, app, ok := s.loadNotice(w, r)
+	if !ok {
 		return
 	}
 	body := renderNotice(notice, app)

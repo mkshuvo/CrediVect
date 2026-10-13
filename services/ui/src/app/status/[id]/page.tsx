@@ -29,6 +29,12 @@ import ShapWaterfall from '@/components/ShapWaterfall';
 
 const POLL_INTERVAL_MS = 2500;
 
+// Scoped per application so two status links open in one tab cannot read each
+// other's records with the wrong capability token.
+function statusTokenKey(id: string): string {
+  return `credivect_status_token:${id}`;
+}
+
 export default function ApplicationStatusPage() {
   const { id } = useParams<{ id: string }>();
   const [app, setApp] = useState<Application | null>(null);
@@ -36,26 +42,50 @@ export default function ApplicationStatusPage() {
   const [notice, setNotice] = useState<AdverseNotice | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [statusToken, setStatusToken] = useState<string | null>(null);
+  const [noToken, setNoToken] = useState(false);
+  const [unauthorized, setUnauthorized] = useState(false);
   // Held in a ref so the interval callback never closes over a stale id, and a
   // response that arrives after unmount cannot set state.
   const alive = useRef(true);
 
+  // The App Router hands us params.id but never the URL fragment, so the token
+  // issued at submission is read from the hash here; sessionStorage keeps it
+  // alive for reloads in the same tab if the fragment is lost.
+  useEffect(() => {
+    const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+    const token = fragment.get('t') || window.sessionStorage.getItem(statusTokenKey(id));
+    if (token) {
+      window.sessionStorage.setItem(statusTokenKey(id), token);
+      setStatusToken(token);
+    } else {
+      setNoToken(true);
+    }
+  }, [id]);
+
   const load = useCallback(async () => {
-    if (!id) return;
+    if (!id || !statusToken) return;
     try {
-      const data = await api.getApplication(id);
+      const data = await api.getApplication(id, statusToken);
       if (!alive.current) return;
       setApp(data);
       setError(null);
     } catch (err) {
       if (!alive.current) return;
+      // A rejected token will never start working on the next poll: stop and
+      // explain instead of looping 401s at core.
+      if (err instanceof ApiError && err.status === 401) {
+        setUnauthorized(true);
+        return;
+      }
       setError(err instanceof ApiError ? err.message : 'Unable to read the application.');
     } finally {
       if (alive.current) setLoaded(true);
     }
-  }, [id]);
+  }, [id, statusToken]);
 
   useEffect(() => {
+    if (!statusToken || unauthorized) return;
     alive.current = true;
     load();
     const timer = setInterval(load, POLL_INTERVAL_MS);
@@ -63,7 +93,7 @@ export default function ApplicationStatusPage() {
       alive.current = false;
       clearInterval(timer);
     };
-  }, [load]);
+  }, [load, statusToken, unauthorized]);
 
   // The workflow query is only meaningful while the saga is still running; a
   // completed execution is no longer queryable.
@@ -74,13 +104,17 @@ export default function ApplicationStatusPage() {
     }
     let cancelled = false;
     api
-      .workflowState(app.id)
+      .workflowState(app.id, statusToken)
       .then((s) => !cancelled && setState(s))
-      .catch(() => !cancelled && setState(null));
+      .catch((err) => {
+        if (cancelled) return;
+        if (err instanceof ApiError && err.status === 401) setUnauthorized(true);
+        setState(null);
+      });
     return () => {
       cancelled = true;
     };
-  }, [app]);
+  }, [app, statusToken]);
 
   useEffect(() => {
     if (!app || (app.status !== 'DECLINED' && app.status !== 'IN_REVIEW')) {
@@ -89,13 +123,54 @@ export default function ApplicationStatusPage() {
     }
     let cancelled = false;
     api
-      .adverseAction(app.id)
+      .adverseAction(app.id, statusToken)
       .then((n) => !cancelled && setNotice(n))
-      .catch(() => !cancelled && setNotice(null));
+      .catch((err) => {
+        if (cancelled) return;
+        if (err instanceof ApiError && err.status === 401) setUnauthorized(true);
+        setNotice(null);
+      });
     return () => {
       cancelled = true;
     };
-  }, [app]);
+  }, [app, statusToken]);
+
+  // Neither the fragment nor sessionStorage carried a token: do not fetch at
+  // all, explain calmly instead of error-spamming a guaranteed 401.
+  if (noToken) {
+    return (
+      <Container maxWidth="sm" sx={{ py: 10 }}>
+        <Alert severity="info" sx={{ display: 'block', textAlign: 'left' }}>
+          <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 1 }}>
+            This page needs the access code from your submission
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            To keep your credit decision private, status opens only with the one-time access code issued when you
+            applied. The code is shown once and cannot be retrieved again, so please reopen the status link from your
+            submission screen; if you applied in another browser tab, the code is still active there. If the link is
+            lost, contact support and we will help you through the next steps.
+          </Typography>
+        </Alert>
+      </Container>
+    );
+  }
+
+  if (unauthorized) {
+    return (
+      <Container maxWidth="sm" sx={{ py: 10 }}>
+        <Alert severity="warning" sx={{ display: 'block', textAlign: 'left' }}>
+          <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 1 }}>
+            The access code does not match this application
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Auto-refresh has stopped. Codes are issued per application and are not reissued, so reopen the status link
+            shown on the submission screen for application {id}. If you applied more than once, each application has
+            its own link and code.
+          </Typography>
+        </Alert>
+      </Container>
+    );
+  }
 
   if (!loaded) {
     return (
@@ -289,7 +364,7 @@ export default function ApplicationStatusPage() {
 
             <Button
               component="a"
-              href={api.adverseActionNoticeUrl(app.id)}
+              href={api.adverseActionNoticeUrl(app.id, statusToken)}
               variant="outlined"
               color="error"
               startIcon={<DescriptionIcon />}

@@ -44,6 +44,7 @@ boundaries.
 | --- | --- | --- | --- | --- |
 | `ui` | Next.js 16, React 19, MUI 6 | 3000 | 3000 | Borrower wizard, underwriter queue, governance console |
 | `core` | Go 1.23 | 8000 | 8000 | REST API, validation, auth, persistence, saga worker, event producer |
+| `ingest` | Go 1.23 (same image) | 8090 | 8090 | Kafka consumer group; materialises the event stream and serves it read-only |
 | `scoring` | Python 3.12, LightGBM 4 | 50051 | 50051 | PD model, WoE scorecard, TreeSHAP attributions |
 | `postgres` | Postgres 17 | 5432 | 5432 | System of record, Temporal store |
 | `dragonfly` | Dragonfly 1.40 | 6379 | 6379 | Application/bureau cache, idempotency replay, rate limiting |
@@ -221,6 +222,10 @@ curl -s http://localhost:8000/api/v1/governance/verify     -H "Authorization: Be
 curl -s "http://localhost:8000/api/v1/governance/latency?samples=240" -H "Authorization: Bearer $TOK"
 curl -s "http://localhost:8000/api/v1/governance/drift?feature=OVERALL_PD&samples=240" -H "Authorization: Bearer $TOK"
 curl -s -X POST "http://localhost:8000/api/v1/governance/drift?feature=OVERALL_PD" -H "Authorization: Bearer $TOK"
+
+# The same events, read back through the consumer (INGEST_HOST_PORT, 8090 by default)
+curl -s http://localhost:8090/health
+curl -s "http://localhost:8090/events?application_id=<id>&limit=20"
 ```
 
 ---
@@ -236,13 +241,13 @@ token; roles are `BORROWER`, `UNDERWRITER`, `ADMIN`.
 | `GET /health` and `GET /api/v1/health` | none | Liveness of core and each dependency |
 | `POST /auth/login` | none | Issue a 12-hour HS256 session token |
 | `GET /auth/me` | any role | Echo the caller's claims |
-| `POST /applications` | none, rate limited, `Idempotency-Key` required | Originate an application and start the saga |
+| `POST /applications` | none, rate limited, `Idempotency-Key` required | Originate an application and start the saga; returns the one-time status token |
 | `GET /applications` | UNDERWRITER, ADMIN | Paged queue with `status`, `tier`, `limit`, `offset` and per-status counts |
-| `GET /applications/get?id=` | open, redacted without a session | One application with bureau file, score, SHAP and decision |
+| `GET /applications/get?id=` | status token or staff session | One application with bureau file, score, SHAP and decision; borrower-identifying detail is stripped for a token caller |
 | `POST /applications/review?id=` | UNDERWRITER, ADMIN | Signal the parked saga; returns 202 |
-| `GET /applications/adverse-action?id=` | none | FCRA notice as JSON |
-| `GET /applications/adverse-action.txt?id=` | none | The same notice as plain text |
-| `GET /applications/workflow-state?id=` | none | Temporal query: current stage, tier, waiting-since |
+| `GET /applications/adverse-action?id=` | status token or staff session | FCRA notice as JSON |
+| `GET /applications/adverse-action.txt?id=` | status token or staff session | The same notice as plain text |
+| `GET /applications/workflow-state?id=` | status token or staff session | Temporal query: current stage, tier, waiting-since |
 | `GET /governance/ledger?limit=` | UNDERWRITER, ADMIN | Tail of the audit chain |
 | `GET /governance/verify` | any role | Recompute and verify every hash link |
 | `GET /governance/drift` | UNDERWRITER, ADMIN | Stored PSI evaluations |
@@ -253,14 +258,21 @@ token; roles are `BORROWER`, `UNDERWRITER`, `ADMIN`.
 An idempotency key is only consumed by a request that passes validation, so a
 rejected submission can be corrected and retried with the same key.
 
+A status token is the 43-character credential `POST /applications` returns once
+per case. Send it as `X-Status-Token`, or as `?token=` where the browser has to
+fetch it through a link. Core stores only its SHA-256 digest, so neither a table
+read nor a database backup can be used to impersonate a borrower.
+
 ### Data model
 
 `scripts/init-db.sql` creates 13 tables: `users`, `applicants`,
 `credit_applications`, `bureau_reports`, `feature_vectors`, `model_versions`,
 `scoring_runs`, `shap_explanations`, `adverse_action_reasons`, `decisions`,
-`audit_ledger`, `drift_metrics`. Money columns are `BIGINT` cents with `CHECK`
-constraints that match the API's validation bounds, and
+`audit_ledger`, `drift_metrics`, `application_events`. Money columns are `BIGINT`
+cents with `CHECK` constraints that match the API's validation bounds, and
 `internal/api/validate_test.go` asserts that they stay in step.
+`application_events` is keyed on `(kafka_partition, kafka_offset)`, which is what
+makes the consumer's at-least-once delivery safe to replay.
 
 ---
 
@@ -270,17 +282,18 @@ constraints that match the API's validation bounds, and
 $ make test
 Ran 20 tests in 0.3s          # services/scoring, in the scoring image
 OK
-ok  credivect/core/internal/api         # validation bounds, redaction
+ok  credivect/core/internal/api         # validation bounds, redaction, route gates
 ok  credivect/core/internal/auth        # token issue/verify, role gates
 ok  credivect/core/internal/bureau      # simulator determinism
 ok  credivect/core/internal/governance  # PSI maths
-ok  credivect/core/internal/security    # AES-GCM + blind index
+ok  credivect/core/internal/ingest      # event -> row mapping, wire format
+ok  credivect/core/internal/security    # AES-GCM + blind index, capability tokens
 ok  credivect/core/internal/storage     # Merkle chain vectors
 ok  credivect/core/internal/workflow    # saga behaviour
 ok  credivect/core/tests                # money/rounding, UUIDv7
 ```
 
-56 Go test functions plus 20 Python tests, all passing. The interesting ones:
+65 Go test functions plus 20 Python tests, all passing. The interesting ones:
 
 - **Saga tests** (`internal/workflow/saga_test.go`) run the real workflow against
   Temporal's test environment with a mock clock: automatic approval, automatic
@@ -297,6 +310,17 @@ ok  credivect/core/tests                # money/rounding, UUIDv7
   risk in every scored feature, the 300-850 scorecard band, banker's rounding,
   the 15 ms SLA, TreeSHAP completeness (`base_value + sum(attributions) ==
   tree margin`), and that each invalid gRPC field is rejected by name.
+
+- **Route table test** (`internal/api/routes_test.go`) walks the real mux and
+  demands the gate answer: every staff route returns 401 anonymously and 403 to a
+  borrower session, and a credential that will not parse is rejected on all
+  twelve guarded routes. Deleting one `s.guard.RequireRole(...)` wrapper makes it
+  fail, which is exactly the mistake that once left the FCRA notice endpoints open.
+- **Capability token tests** (`internal/security/token_test.go`,
+  `internal/api/status_token_test.go`) check tokens are unguessable and unique,
+  that the digest is stable, that only the exact token matches (not a prefix, an
+  extension, or one flipped character), that a row with no digest can never
+  authenticate, and that a header beats the query string.
 
 ### Measured latency
 
@@ -316,6 +340,16 @@ Live figures at `GET /api/v1/governance/latency` and on the governance screen.
 End-to-end application time is dominated by the simulated bureau pull, not by
 scoring.
 
+### Continuous integration
+
+`.github/workflows/ci.yml` runs four jobs on every push and pull request: `go`
+(gofmt, `go vet`, build, `go test -count=1 ./...`), `scoring` (build the scoring
+image, which trains the model from the fixed seed, then run the 20 unittests
+inside it), `ui` (`npm ci` and a production `next build`), and `compose` (`docker
+compose config` validates the stack file). The commands are the same ones `make
+test` and `make up` run locally, and all four pass here; the workflow itself has
+not executed on a GitHub runner yet, so treat its first green run as unverified.
+
 ---
 
 ## What is real, what is simulated
@@ -332,7 +366,8 @@ Real and load-bearing:
 - Append-only Merkle audit chain, hash-verified on demand.
 - PSI drift measurement against the shipped training baseline.
 - FCRA adverse action notices, on screen and as a text download.
-- Kafka event production on every decision.
+- Kafka event production on every stage of the saga, and a consumer group that
+  materialises that stream into a queryable table.
 
 Simulated or scoped down, deliberately:
 
@@ -344,13 +379,16 @@ Simulated or scoped down, deliberately:
   20260903, 200k applicants, holdout AUC 0.806, KS 0.459, Brier 0.070). It is a
   real gradient-boosted model with a real calibration step, but its predictive
   power says nothing about actual consumer risk.
-- **Kafka has a producer but no consumer** in this repository; the events are
-  inspectable in Redpanda Console rather than feeding a downstream system.
+- **Kafka now has both ends.** `services/core/internal/ingest` runs as the
+  `credivect-ingest` service: one consumer group over the application topic,
+  committed only after the row lands, deduplicated on the `(partition, offset)`
+  primary key. It is a read model for this repo rather than a feed into another
+  system - `GET :8090/events?application_id=` is where the stream comes back.
 - **Auth is the local HS256 provider only.** `AUTH_MODE` exists to make the
   boundary explicit; no OIDC/SAML integration is wired up.
 - Single-node Postgres/Temporal/Redpanda, no TLS between containers, no
-  horizontal scaling, no CI pipeline, and schema changes are one idempotent
-  SQL file rather than a migration tool.
+  horizontal scaling, and schema changes are one idempotent SQL file rather than
+  a migration tool.
 
 ---
 
@@ -364,8 +402,9 @@ itself, may already own. Two things to know:
   fails with `bind: An attempt was made to access a socket in a way forbidden by
   its access permissions`. Check with `netsh int ipv4 show excludedportrange
   protocol=tcp` and move the CrediVect ports in `.env` (`CORE_HOST_PORT`,
-  `TEMPORAL_HOST_PORT`, `TEMPORAL_UI_HOST_PORT`, `REDPANDA_CONSOLE_HOST_PORT`,
-  `KAFKA_EXTERNAL_HOST_PORT`). `docker compose down` then `up` releases the
+  `INGEST_HOST_PORT`, `TEMPORAL_HOST_PORT`, `TEMPORAL_UI_HOST_PORT`,
+  `REDPANDA_CONSOLE_HOST_PORT`, `KAFKA_EXTERNAL_HOST_PORT`). `docker compose
+  down` then `up` releases the
   reservations held by this stack; never take the whole stack down just to free
   Postgres 5432 or Dragonfly 6379 if another project is using them.
 - **The browser does not care.** Only the UI port (3000) needs to be reachable;
@@ -389,29 +428,45 @@ credentials, replace the seeded accounts, and put TLS in front of core. Note
 that rotating `SSN_ENCRYPTION_KEY` invalidates both existing sealed SSNs and the
 blind indexes used to match borrowers.
 
-`GET /api/v1/applications/get` stays reachable without a session because the
-borrower status page is keyed by application id alone. Without a token it returns
-a redacted projection: the applicant's email, date of birth, income, external id,
-employment status and the full tradeline detail are stripped, leaving the decision
-and the score the applicant is entitled to see. Underwriters and admins present a
-token and get the complete record. Anyone who holds an application id can still
-read that much, so treat the id as a bearer credential; a production rollout
-should move borrower status behind a borrower session linked to the applicant.
+The four routes that describe one named consumer - `applications/get`,
+`workflow-state`, `adverse-action` and `adverse-action.txt` - require a
+credential. Origination is anonymous, so the applicant's credential is the
+capability token `POST /applications` returns once; a staff session
+(`UNDERWRITER` or `ADMIN`) is accepted on the same routes and sees the complete
+record. A token caller additionally gets a redacted projection: the applicant's
+email, date of birth, income, external id, employment status and the full
+tradeline detail are stripped, leaving the decision, the score and the
+explanation the applicant is entitled to see. No credential, no answer: those
+routes return 401 rather than a preview.
+
+The token is 256 bits of randomness, stored only as a SHA-256 digest and compared
+in constant time, so a leaked table cannot be used to read cases. The UI carries
+it in the URL fragment (`/status/<id>#t=...`), which never reaches a server, and
+puts it in `sessionStorage` per application so a reload still works. Two limits
+remain, and both are deliberate rather than accidental: the token is bearer-grade
+(whoever holds it reads that case, and the text download has to put it in a query
+string for the anchor to work), and nothing rotates or revokes one - the digest is
+written once at origination and carries no expiry. Applications seeded before
+capability tokens existed simply have no digest, so they stay unreadable without a
+session. A production rollout replaces the token with a borrower account: the same
+authorization boundary, with an identity behind it that can be reset.
 
 ---
 
 ## Layout
 
 ```
-docker-compose.yml         The pinned nine-service stack plus tool profiles
+docker-compose.yml         The pinned ten-service stack plus tool profiles
 .env.example               Host ports, secrets and behaviour knobs
 Makefile                   Every command above
+.github/workflows/ci.yml   Go, scoring image + its tests, UI build, compose config
 proto/                     credivect.scoring.v1 gRPC contract
 scripts/init-db.sql        Schema, constraints and indexes (idempotent)
 services/core/             Go API, repository, saga, activities, auth, audit chain
   cmd/server/              HTTP server + worker bootstrap
+  cmd/ingest/              Kafka consumer service and its read-only HTTP API
   cmd/seed/                Seeder (users, model version, applications)
-  internal/{api,auth,bureau,cache,client,config,domain,events,governance,security,storage,workflow}
+  internal/{api,auth,bureau,cache,client,config,domain,events,governance,ingest,security,storage,workflow}
   tests/                   Money, rounding and UUIDv7 tests
 services/scoring/          Python gRPC scoring service
   engine/                  risk.py facade, lightgbm_model, scorecard, policy,

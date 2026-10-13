@@ -73,6 +73,29 @@ func (r *Repository) InsertApplication(ctx context.Context, app domain.CreditApp
 	return nil
 }
 
+// SetStatusTokenHash stores the digest of the applicant's capability token. It
+// runs once, at origination, alongside the insert that created the row.
+func (r *Repository) SetStatusTokenHash(ctx context.Context, applicationID, hash string) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE credit_applications SET status_token_hash = $2 WHERE id = $1`, applicationID, hash)
+	return err
+}
+
+// StatusTokenHash returns the stored digest, or "" when the application has
+// none, which is the case for rows predating capability tokens.
+func (r *Repository) StatusTokenHash(ctx context.Context, applicationID string) (string, error) {
+	var hash *string
+	err := r.pool.QueryRow(ctx,
+		`SELECT status_token_hash FROM credit_applications WHERE id = $1`, applicationID).Scan(&hash)
+	if err != nil {
+		return "", err
+	}
+	if hash == nil {
+		return "", nil
+	}
+	return *hash, nil
+}
+
 func (r *Repository) InsertBureauReport(ctx context.Context, b domain.BureauReport) error {
 	payload := b.RawPayload
 	if payload == "" {

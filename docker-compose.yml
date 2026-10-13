@@ -124,6 +124,36 @@ services:
     volumes:
       - ./services/scoring/engine/models:/app/engine/models
 
+  # =========================================================================
+  # 3c. EVENT STREAM CONSUMER: Kafka -> application_events read model
+  # =========================================================================
+  ingest:
+    image: credivect-core:latest
+    container_name: credivect-ingest
+    restart: unless-stopped
+    entrypoint: ["/app/credivect-ingest"]
+    ports:
+      # Read model of the stream: GET /events, GET /health.
+      - "${INGEST_HOST_PORT:-8090}:8090"
+    environment:
+      - INGEST_PORT=8090
+      - JWT_SECRET=${JWT_SECRET:-credivect-super-secure-local-jwt-secret-key-32bytes!}
+      - SSN_ENCRYPTION_KEY=${SSN_ENCRYPTION_KEY:-01918a2b4c5d7e6f00112233445566778899aabbccddeeff0011223344556677}
+      - POSTGRES_URL=postgres://credivect_user:credivect_password@postgres:5432/credivect?sslmode=disable
+      - KAFKA_BROKERS=redpanda:9092
+      - KAFKA_TOPIC=credivect.application.events
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+
   scoring:
     build:
       context: ./services/scoring

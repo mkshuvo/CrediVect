@@ -48,8 +48,8 @@ func fullApplication() domain.CreditApplication {
 	}
 }
 
-func TestRedactForAnonymousDropsApplicantPII(t *testing.T) {
-	got := redactForAnonymous(fullApplication())
+func TestRedactForBorrowerDropsApplicantPII(t *testing.T) {
+	got := redactForBorrower(fullApplication())
 	a := got.Applicant
 	if a == nil {
 		t.Fatal("applicant must stay present so the borrower page can address the file")
@@ -65,8 +65,8 @@ func TestRedactForAnonymousDropsApplicantPII(t *testing.T) {
 	}
 }
 
-func TestRedactForAnonymousDropsConsumerReportDetail(t *testing.T) {
-	got := redactForAnonymous(fullApplication())
+func TestRedactForBorrowerDropsConsumerReportDetail(t *testing.T) {
+	got := redactForBorrower(fullApplication())
 	b := got.BureauReport
 	if b == nil {
 		t.Fatal("bureau report must stay present: the status page shows the reported score")
@@ -85,8 +85,8 @@ func TestRedactForAnonymousDropsConsumerReportDetail(t *testing.T) {
 }
 
 // The borrower status page is built from these fields; redaction must not break it.
-func TestRedactForAnonymousKeepsTheBorrowerView(t *testing.T) {
-	got := redactForAnonymous(fullApplication())
+func TestRedactForBorrowerKeepsTheBorrowerView(t *testing.T) {
+	got := redactForBorrower(fullApplication())
 	if got.ID == "" || got.Status != domain.StatusApproved || got.WorkflowID == "" {
 		t.Errorf("application header dropped: %+v", got)
 	}
@@ -102,9 +102,9 @@ func TestRedactForAnonymousKeepsTheBorrowerView(t *testing.T) {
 	}
 }
 
-func TestRedactForAnonymousDoesNotMutateTheCaller(t *testing.T) {
+func TestRedactForBorrowerDoesNotMutateTheCaller(t *testing.T) {
 	app := fullApplication()
-	_ = redactForAnonymous(app)
+	_ = redactForBorrower(app)
 	if app.Applicant.Email == "" || app.BureauReport.TotalDebtCents == 0 {
 		t.Error("redaction mutated the caller's record, which would corrupt a shared read")
 	}

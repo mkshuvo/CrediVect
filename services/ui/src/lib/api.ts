@@ -271,6 +271,12 @@ interface RequestOptions {
   anonymous?: boolean;
 }
 
+// Borrower reads of a single application are gated by the status token issued
+// at submission; the header form keeps the token out of URLs and access logs.
+function statusTokenHeaders(statusToken?: string | null): Record<string, string> {
+  return statusToken ? { 'X-Status-Token': statusToken } : {};
+}
+
 async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
   const token = getToken();
@@ -338,12 +344,17 @@ export const api = {
 
   me: () => request<SessionUser>('/auth/me'),
 
+  // status_token is returned exactly once here and cannot be retrieved later,
+  // so the caller must hand it to the borrower-facing reads below.
   submitApplication: (payload: NewApplication, idempotencyKey: string) =>
-    request<{ application: Application; workflow_id: string; status: string }>('/applications', {
-      method: 'POST',
-      body: payload,
-      headers: { 'Idempotency-Key': idempotencyKey },
-    }),
+    request<{ application: Application; workflow_id: string; status: string; status_token: string }>(
+      '/applications',
+      {
+        method: 'POST',
+        body: payload,
+        headers: { 'Idempotency-Key': idempotencyKey },
+      },
+    ),
 
   listApplications: (params: { status?: string; tier?: string; limit?: number; offset?: number } = {}) => {
     const q = new URLSearchParams();
@@ -354,10 +365,15 @@ export const api = {
     return request<ApplicationPage>(`/applications?${q.toString()}`);
   },
 
-  getApplication: (id: string) => request<Application>(`/applications/get?id=${encodeURIComponent(id)}`),
+  getApplication: (id: string, statusToken?: string | null) =>
+    request<Application>(`/applications/get?id=${encodeURIComponent(id)}`, {
+      headers: statusTokenHeaders(statusToken),
+    }),
 
-  workflowState: (id: string) =>
-    request<WorkflowState>(`/applications/workflow-state?id=${encodeURIComponent(id)}`),
+  workflowState: (id: string, statusToken?: string | null) =>
+    request<WorkflowState>(`/applications/workflow-state?id=${encodeURIComponent(id)}`, {
+      headers: statusTokenHeaders(statusToken),
+    }),
 
   review: (id: string, body: ReviewRequest) =>
     request<{ application_id: string; workflow_id: string; signal: string; decision: string }>(
@@ -365,11 +381,18 @@ export const api = {
       { method: 'POST', body },
     ),
 
-  adverseAction: (id: string) => request<AdverseNotice>(`/applications/adverse-action?id=${encodeURIComponent(id)}`),
+  adverseAction: (id: string, statusToken?: string | null) =>
+    request<AdverseNotice>(`/applications/adverse-action?id=${encodeURIComponent(id)}`, {
+      headers: statusTokenHeaders(statusToken),
+    }),
 
   // The notice is a server-rendered text attachment; a plain link downloads it
-  // with the statutory wording already formatted.
-  adverseActionNoticeUrl: (id: string) => `/api/v1/applications/adverse-action.txt?id=${encodeURIComponent(id)}`,
+  // with the statutory wording already formatted. An anchor cannot set a header,
+  // so the status token travels as a query parameter on this one URL.
+  adverseActionNoticeUrl: (id: string, statusToken?: string | null) =>
+    `/api/v1/applications/adverse-action.txt?id=${encodeURIComponent(id)}${
+      statusToken ? `&token=${encodeURIComponent(statusToken)}` : ''
+    }`,
 
   ledger: (limit = 50, applicationId?: string) =>
     request<AuditEntry[]>(`/governance/ledger?limit=${limit}${applicationId ? `&application_id=${encodeURIComponent(applicationId)}` : ''}`),

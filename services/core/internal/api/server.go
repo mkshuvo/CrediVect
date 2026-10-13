@@ -65,13 +65,16 @@ func (s *Server) Routes() *http.ServeMux {
 
 	mux.HandleFunc("POST /api/v1/applications", s.HandleCreateApplication)
 	mux.Handle("GET /api/v1/applications", s.guard.RequireRole(auth.RoleUnderwriter, auth.RoleAdmin)(http.HandlerFunc(s.HandleListApplications)))
-	// A borrower holds only the application id, so this read stays open; the
-	// handler strips consumer-report detail unless a session is presented.
+	// These four each describe one named consumer. Origination is anonymous, so
+	// the applicant's credential is the capability token returned by
+	// POST /applications rather than a session; Authenticate lets an underwriter
+	// or admin session in through the same route, and the handler decides which
+	// one it saw. Neither credential means neither answer.
 	mux.Handle("GET /api/v1/applications/get", s.guard.Authenticate(http.HandlerFunc(s.HandleGetApplication)))
 	mux.Handle("POST /api/v1/applications/review", s.guard.RequireRole(auth.RoleUnderwriter, auth.RoleAdmin)(http.HandlerFunc(s.HandleReviewDecision)))
-	mux.HandleFunc("GET /api/v1/applications/adverse-action", s.HandleAdverseAction)
-	mux.HandleFunc("GET /api/v1/applications/adverse-action.txt", s.HandleAdverseActionNotice)
-	mux.HandleFunc("GET /api/v1/applications/workflow-state", s.HandleWorkflowState)
+	mux.Handle("GET /api/v1/applications/adverse-action", s.guard.Authenticate(http.HandlerFunc(s.HandleAdverseAction)))
+	mux.Handle("GET /api/v1/applications/adverse-action.txt", s.guard.Authenticate(http.HandlerFunc(s.HandleAdverseActionNotice)))
+	mux.Handle("GET /api/v1/applications/workflow-state", s.guard.Authenticate(http.HandlerFunc(s.HandleWorkflowState)))
 
 	mux.Handle("GET /api/v1/governance/ledger", s.guard.RequireRole(auth.RoleUnderwriter, auth.RoleAdmin)(http.HandlerFunc(s.HandleLedger)))
 	mux.Handle("GET /api/v1/governance/verify", s.guard.RequireRole(auth.RoleUnderwriter, auth.RoleAdmin, auth.RoleBorrower)(http.HandlerFunc(s.HandleVerifyChain)))

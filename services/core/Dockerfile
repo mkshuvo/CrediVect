@@ -9,7 +9,8 @@ RUN go mod download
 
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-w -s" -o /out/credivect-core ./cmd/server && \
-    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-w -s" -o /out/credivect-seed ./cmd/seed
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-w -s" -o /out/credivect-seed ./cmd/seed && \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-w -s" -o /out/credivect-ingest ./cmd/ingest
 
 # Runtime stage: minimal Alpine, non-root, no shell tooling beyond curl.
 FROM alpine:3.21 AS runner
@@ -21,6 +22,7 @@ RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
 COPY --from=builder --chown=appuser:appgroup /out/credivect-core /app/credivect-core
 COPY --from=builder --chown=appuser:appgroup /out/credivect-seed /app/credivect-seed
+COPY --from=builder --chown=appuser:appgroup /out/credivect-ingest /app/credivect-ingest
 
 USER appuser
 EXPOSE 8000
