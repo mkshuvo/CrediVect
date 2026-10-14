@@ -4,6 +4,11 @@
 -include .env
 CORE_PORT ?= $(if $(CORE_HOST_PORT),$(CORE_HOST_PORT),8000)
 
+# cmd/e2e is a client of the running stack, so it must dial the port the stack
+# actually published. Exported rather than written into the recipe so it works
+# under either shell, and `?=` so an explicit CORE_URL still wins.
+export CORE_URL ?= http://localhost:$(CORE_PORT)
+
 # Long-running stack. Prefer `make build` plus targeted recreates over down/up.
 up:
 	docker compose up -d

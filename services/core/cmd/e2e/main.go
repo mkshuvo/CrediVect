@@ -1018,7 +1018,7 @@ func (h *harness) summary() int {
 }
 
 func main() {
-	base := strings.TrimRight(envOr("CORE_URL", "http://localhost:8600"), "/")
+	base := strings.TrimRight(envOr("CORE_URL", "http://localhost:8000"), "/")
 	budget := envDuration("E2E_DECISION_TIMEOUT", 90*time.Second)
 
 	h := &harness{
