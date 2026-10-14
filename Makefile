@@ -79,9 +79,22 @@ bench:
 e2e:
 	cd services/core && go run ./cmd/e2e
 
-# Serves a development identity provider on 127.0.0.1:9355, so delegated
+# Serves a development identity provider on loopback, so delegated
 # authentication can be exercised without an Auth0 tenant. Run it in a second
 # terminal, recreate core with AUTH_MODE=oidc pointed at it, then run
-# E2E_IDP_URL=http://host.docker.internal:9355 make e2e
+# E2E_IDP_URL=http://127.0.0.1:9355 make e2e
+#
+# The client runs on the host, so it dials 127.0.0.1; only the core container
+# reaches the same listener through host.docker.internal. Override IDP_ADDR when
+# Windows has reserved the default range -- check with
+# `netsh int ipv4 show excludedportrange protocol=tcp`.
+IDP_ADDR ?= 127.0.0.1:9355
+IDP_PORT = $(word 2,$(subst :, ,$(IDP_ADDR)))
+# Core checks `iss` against the token exactly, and it reaches this provider from
+# inside the compose network -- so the tokens must be stamped with the
+# host.docker.internal form, not the loopback address the provider binds. Left
+# to its own default, dev-idp signs with 127.0.0.1 and every delegated login is
+# refused as an invalid credential.
+IDP_ISSUER ?= http://host.docker.internal:$(IDP_PORT)
 idp:
-	cd services/core && go run ./cmd/dev-idp
+	cd services/core && go run ./cmd/dev-idp -addr $(IDP_ADDR) -issuer $(IDP_ISSUER)
