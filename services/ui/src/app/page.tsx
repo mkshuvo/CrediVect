@@ -67,7 +67,7 @@ export default function HomePage() {
                   FCRA TreeSHAP Explainability
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
-                  Legally compliant Adverse Action Notices listing the top 4 ranked reason codes (AA01-AA05).
+                  Legally compliant Adverse Action Notices naming the agency and the ranked reasons behind the decision, up to the four principal ones (AA01-AA05).
                 </Typography>
               </CardContent>
             </Card>

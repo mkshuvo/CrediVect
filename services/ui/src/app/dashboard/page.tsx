@@ -270,7 +270,24 @@ export default function UnderwriterQueue() {
                     hover
                     selected={selected?.id === app.id}
                     onClick={() => setSelectedId(app.id)}
-                    sx={{ cursor: 'pointer' }}
+                    onKeyDown={(e) => {
+                      // The row is the only way to open a case, so it has to
+                      // answer to the keyboard as well as the pointer.
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setSelectedId(app.id);
+                      }
+                    }}
+                    tabIndex={0}
+                    aria-label={`${app.applicant ? `${app.applicant.first_name} ${app.applicant.last_name}` : 'Application'} ${app.status}, open for review`}
+                    sx={{
+                      cursor: 'pointer',
+                      '&:focus-visible': {
+                        outline: '2px solid',
+                        outlineColor: 'primary.main',
+                        outlineOffset: -2,
+                      },
+                    }}
                   >
                     <TableCell>
                       {app.applicant ? `${app.applicant.first_name} ${app.applicant.last_name}` : app.id.slice(0, 8)}
