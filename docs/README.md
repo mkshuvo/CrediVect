@@ -38,3 +38,13 @@ Welcome to the **CrediVect** engineering and domain knowledge base. This documen
 5. **[05. Implementation Walkthrough & Verification](./05_implementation_walkthrough.md)**
    - Verification report across Python, Go, and Next.js tiers.
    - Test suites, security audits (0 npm vulnerabilities), and latency benchmarks.
+
+6. **[06. Underwriting Completion Sequence](./06_underwriting_completion_sequence.md)**
+   - The saga walked to each of its four completion points, with line references.
+   - Why a parked case writes a status but no decision row.
+   - What `RecordOutcome` writes, in order, and how the review timer is cancelled.
+   - Where a completed case can be read back (Temporal, Postgres, ledger, Kafka, ingest).
+
+> **Note:** `docs/00`–`docs/05` are the original design briefs and contain
+> sections that no longer match the code. See [AGENTS.md](../AGENTS.md) for the
+> authority order and the list of known-stale claims.
