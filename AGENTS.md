@@ -186,3 +186,29 @@ correct entries that later prove wrong.
   returns 400, not 202; `/me/applications` as ADMIN returns 403; a POST without
   `Idempotency-Key` is 422. Every UI page surfaces fetch failures through an
   `Alert` backed by a real `catch` — no silent failures.
+- **2026-10-15, defect found and fixed: the delegated sign-in demo could not
+  authenticate.** `cmd/dev-idp` stamps `iss` with its own listening address by
+  default, while README:202-206 has core verify against the
+  `host.docker.internal` form (the only address the container can reach it by).
+  The mismatch made every federated login a 401. Fixed in the Makefile by
+  deriving `IDP_ISSUER` from `IDP_ADDR`; the target also gained an address
+  override because Windows reserves 9340-9439 on this machine, swallowing the
+  hardcoded 9355.
+- **2026-10-15, the 11 OIDC e2e checks have never run in CI.** `ci.yml` starts
+  no `dev-idp` and sets no `OIDC_*`, so `cmd/e2e` prints its SKIP line there and
+  the job goes green having checked 42 of 53. The README's "53 checks passed"
+  was therefore never demonstrated on a runner. Verified locally on
+  `IDP_ADDR=127.0.0.1:9455`: **53 passed, 0 failed**, covering federated sign-in,
+  UUIDv5 account provisioning, a roleless token answering 403 rather than 401, a
+  tampered signature rejected, local logins still working beside the provider,
+  and a federated borrower owning the case they filed. Reproduce with:
+  `make idp IDP_ADDR=127.0.0.1:9455`, recreate core with
+  `AUTH_MODE=oidc OIDC_ISSUER=http://host.docker.internal:9455
+  OIDC_JWKS_URL=http://host.docker.internal:9455/.well-known/jwks.json
+  OIDC_ALLOW_CLEARTEXT_KEYS=true`, then
+  `E2E_IDP_URL=http://127.0.0.1:9455 make e2e`.
+- **2026-10-15, latency caveat.** Under the concurrent load of an image build
+  and an e2e run on this laptop, `governance/latency` reported p99 72 ms while
+  the SLA check still passed, because it asserts the *share* of runs under
+  15 ms rather than the tail. Do not read an inflated p99 during local work as a
+  regression; the quiet figures were p50 5.1 ms, p95 7-8 ms.
