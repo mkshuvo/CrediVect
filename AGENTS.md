@@ -76,9 +76,9 @@ Do not restate these as fact; fix the doc if you touch it.
   `D:\projects\CrediVect`. The repo is not on that drive.
 - `docs/01` and `docs/03` disagree on the Alex Chen story ($12,000 vs $10,000,
   48h vs 72h timer). The code is 72 hours.
-- The landing page advertises "the top 4 ranked reason codes". Four is a
+- The landing page used to advertise "the top 4 ranked reason codes". Four is a
   **ceiling, not a floor** — a declined case can legitimately render one
-  reason. Verified live on 2026-10-15.
+  reason. Verified live on 2026-10-15 and the copy was corrected the same day.
 
 ## Commands
 
@@ -155,3 +155,34 @@ correct entries that later prove wrong.
   Actions on public repos is free and unlimited on GitHub-hosted runners — so
   nothing here was being billed. Treat CI as unavailable until someone flips it
   back, and run `make test` / `make e2e` locally instead.
+- **2026-10-15** — `make test` green locally: 13 Go packages plus the Python
+  suite. With CI off, this is the gate.
+- **2026-10-15, defect found and fixed: `make e2e` could not run locally.**
+  `cmd/e2e` defaulted to `http://localhost:8600`, a port that exists nowhere
+  else in the repo (compose publishes `${CORE_HOST_PORT:-8000}:8000`). CI hid it
+  by setting `CORE_URL` explicitly in `ci.yml`, so the job was green while the
+  documented local path failed on its very first check. Fixed by defaulting to
+  8000 and exporting `CORE_URL` from the Makefile's `CORE_PORT`. First local
+  run afterwards: **42 checks passed, 0 failed** (chain verified over 977
+  entries, p95 7.39 ms against the 15 ms SLA). The 11 OIDC checks still SKIP
+  without `make idp` + `AUTH_MODE=oidc`.
+- **2026-10-15, defect found and fixed: the underwriter queue was
+  mouse-only.** Each `TableRow` in `services/ui/src/app/dashboard/page.tsx`
+  carried `onClick` and `cursor: pointer` with no `tabIndex`, key handler or
+  accessible name, so a keyboard or screen-reader user could not open a case —
+  and opening a case is the whole job. Verified in the running browser first
+  (the accessibility tree exposed the borrower's name as inert text, and a
+  synthetic click on it failed) before touching the code. Rows are now
+  focusable, respond to Enter and Space, and carry an aria-label naming the
+  borrower and status; re-verified live by focusing a parked case and pressing
+  Enter, which opened the decision panel.
+- **2026-10-15, audited and found sound** (no change needed, recorded so the
+  next session does not redo it): list and governance bounds clamp rather than
+  dump (`applications?limit=-5` and `limit=100000` both return the 50-row
+  default; `governance/ledger?limit=999999999` returns 100; `latency?samples=-1`
+  clamps to the population); an unknown `status`/`tier` filter returns an empty
+  set rather than silently ignoring the filter; SQL-injection and malformed ids
+  in `?id=` return 404 with no query reached; signalling an already-decided case
+  returns 400, not 202; `/me/applications` as ADMIN returns 403; a POST without
+  `Idempotency-Key` is 422. Every UI page surfaces fetch failures through an
+  `Alert` backed by a real `catch` — no silent failures.
