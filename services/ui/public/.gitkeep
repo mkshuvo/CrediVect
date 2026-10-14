@@ -1,0 +1,2 @@
+# Static assets served by Next.js from /public. The runner stage of the
+# Dockerfile copies this directory, so the image build needs it to exist.

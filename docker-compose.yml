@@ -187,7 +187,9 @@ services:
       POSTGRES_USER: credivect_user
       POSTGRES_PASSWORD: credivect_password
     ports:
-      - "5432:5432"
+      # Movable like the other host ports: another local stack may already own 5432.
+      # Services reach postgres as postgres:5432 on the compose network regardless.
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
