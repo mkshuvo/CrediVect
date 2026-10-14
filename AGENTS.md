@@ -144,3 +144,14 @@ correct entries that later prove wrong.
   Completed); the 46 running matched the queue's 46 "awaiting action" exactly.
   Consumer group `credivect-ingest` at lag 0, and `:8090/events` returned the
   same four events at the same Kafka offsets Redpanda Console displayed.
+- **2026-10-15** — run `38617558575` on `b42954d` passed **all five jobs**, the
+  first CI run to exercise the parameterised Postgres port and the new
+  `services/ui/public/` directory.
+- **2026-10-15, CI is currently DISABLED for this repository** at the owner's
+  request: `gh api -X PUT repos/mkshuvo/CrediVect/actions/permissions -F
+  enabled=false`. `.github/workflows/ci.yml` is intentionally left in place, so
+  no runs happen on push or PR. Re-enable with the same call and
+  `-F enabled=true`. Note the premise was cost, but the repo is **public**, and
+  Actions on public repos is free and unlimited on GitHub-hosted runners — so
+  nothing here was being billed. Treat CI as unavailable until someone flips it
+  back, and run `make test` / `make e2e` locally instead.
