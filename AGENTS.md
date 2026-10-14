@@ -212,3 +212,13 @@ correct entries that later prove wrong.
   the SLA check still passed, because it asserts the *share* of runs under
   15 ms rather than the tail. Do not read an inflated p99 during local work as a
   regression; the quiet figures were p50 5.1 ms, p95 7-8 ms.
+- **2026-10-15, defect found and fixed: `test_scoring_stays_under_the_15ms_sla`
+  was a flaky gate.** It asserted a single median over 60 scores, so it failed
+  (20 ms median) whenever anything else was using the CPU -- it broke while a
+  Temporal replay was running, and passed minutes earlier on the same code. The
+  engine itself medians 998 us in a quiet container. Now takes the best of three
+  passes, which a neighbour cannot beat but a genuinely slower model can:
+  verified by injecting a 40x slowdown, which still fails at 937 ms median. Its
+  comment also claimed the measured list excluded cold runs; it did not. This
+  matches the policy the Go benchmarks already follow -- report timing, do not
+  gate on it.
