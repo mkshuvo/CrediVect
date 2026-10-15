@@ -222,3 +222,22 @@ correct entries that later prove wrong.
   comment also claimed the measured list excluded cold runs; it did not. This
   matches the policy the Go benchmarks already follow -- report timing, do not
   gate on it.
+- **2026-10-15, defect found and fixed: the governance PSI chip reported
+  moderate drift as critical.** `governance/drift.go:88-96` returns `STABLE`,
+  `MODERATE_DRIFT` and `CRITICAL_DRIFT`, but the chip in
+  `dashboard/governance/page.tsx` compared against `'MODERATE'`, which never
+  matches -- so every moderate reading fell through to the error colour. The
+  severity tiering is the entire point of that panel. Verified fixed in the
+  browser: the chip now computes to the warning amber `rgb(245,158,11)`.
+  Cross-checked every other status literal the UI compares against
+  `domain/models.go` (`APPROVED`, `DECLINED`, `IN_REVIEW`, `SUBMITTED`,
+  `CANCELLED`, and the `APPROVE` signal value) -- all match, so this was the
+  only instance.
+- **2026-10-15, defect found and fixed: wide tables clipped instead of
+  scrolling.** MUI `Paper` is `overflow: hidden`, and the six-column queue
+  (577 px intrinsic) and drift (1302 px) tables had no scroll container, so on a
+  narrow viewport their right-hand columns vanished with no way to reach them.
+  The ledger table already wrapped itself in `overflowX: 'auto'`; the other two
+  had simply been missed. Used the same one-line idiom rather than
+  `TableContainer`, which contributes nothing but `overflow-x: auto` and would
+  have re-indented 60 lines.
