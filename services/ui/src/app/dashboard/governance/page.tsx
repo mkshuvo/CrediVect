@@ -277,36 +277,42 @@ export default function GovernancePage() {
               No drift measurements recorded. {mayMeasureDrift ? 'Run the evaluation to create the first one.' : 'An ADMIN can run the evaluation.'}
             </Typography>
           ) : (
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell>Evaluated</TableCell>
-                  <TableCell>Feature</TableCell>
-                  <TableCell>PSI</TableCell>
-                  <TableCell>Status</TableCell>
-                  <TableCell>Sample</TableCell>
-                  <TableCell>Model</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {drift.map((m) => (
-                  <TableRow key={m.id}>
-                    <TableCell>{m.evaluated_at}</TableCell>
-                    <TableCell>{m.feature_name}</TableCell>
-                    <TableCell sx={{ fontWeight: 700 }}>{m.psi_value.toFixed(4)}</TableCell>
-                    <TableCell>
-                      <Chip
-                        size="small"
-                        color={m.status === 'STABLE' ? 'success' : m.status === 'MODERATE' ? 'warning' : 'error'}
-                        label={m.status}
-                      />
-                    </TableCell>
-                    <TableCell>{m.sample_size}</TableCell>
-                    <TableCell>{m.model_version}</TableCell>
+            <Box sx={{ overflowX: 'auto' }}>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Evaluated</TableCell>
+                    <TableCell>Feature</TableCell>
+                    <TableCell>PSI</TableCell>
+                    <TableCell>Status</TableCell>
+                    <TableCell>Sample</TableCell>
+                    <TableCell>Model</TableCell>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                </TableHead>
+                <TableBody>
+                  {drift.map((m) => (
+                    <TableRow key={m.id}>
+                      <TableCell>{m.evaluated_at}</TableCell>
+                      <TableCell>{m.feature_name}</TableCell>
+                      <TableCell sx={{ fontWeight: 700 }}>{m.psi_value.toFixed(4)}</TableCell>
+                      <TableCell>
+                        {/* governance.Status returns STABLE, MODERATE_DRIFT or
+                            CRITICAL_DRIFT. Matching a shorter token here silently
+                            promotes moderate drift to the critical colour, which
+                            is the one distinction this panel exists to draw. */}
+                        <Chip
+                          size="small"
+                          color={m.status === 'STABLE' ? 'success' : m.status === 'MODERATE_DRIFT' ? 'warning' : 'error'}
+                          label={m.status}
+                        />
+                      </TableCell>
+                      <TableCell>{m.sample_size}</TableCell>
+                      <TableCell>{m.model_version}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </Box>
           )}
         </CardContent>
       </Card>

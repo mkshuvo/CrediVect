@@ -251,7 +251,10 @@ export default function UnderwriterQueue() {
 
       <Box sx={{ display: 'flex', gap: 3, alignItems: 'flex-start', flexWrap: 'wrap' }}>
         <Card sx={{ flex: '1 1 520px', minWidth: 320 }}>
-          <CardContent sx={{ p: 0 }}>
+          {/* The six columns need 577px; the Paper clips rather than scrolls,
+              so without this the status and latency columns vanish on a narrow
+              screen. */}
+          <CardContent sx={{ p: 0, overflowX: 'auto' }}>
             <Table size="small">
               <TableHead>
                 <TableRow>
