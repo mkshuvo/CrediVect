@@ -49,7 +49,12 @@ export default function ShapWaterfall({ attributions }: { attributions: FeatureA
                     variant="body2"
                     sx={{
                       fontWeight: 700,
-                      color: isNegativeRisk ? 'success.main' : 'error.main',
+                      // The bar below can carry the bright hue; this is 14px
+                      // text on white, and success.main (#10B981) is 2.5:1 and
+                      // error.main (#EF4444) 3.8:1 there -- both far under the
+                      // 4.5:1 floor. These are the same hues taken two steps
+                      // darker: 5.5:1 and 6.4:1.
+                      color: isNegativeRisk ? '#047857' : '#B91C1C',
                     }}
                   >
                     {isNegativeRisk ? 'Score Boost' : 'Risk Penalty'}: {attr.shap_value > 0 ? '+' : ''}{attr.shap_value.toFixed(3)}

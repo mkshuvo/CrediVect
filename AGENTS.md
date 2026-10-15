@@ -241,3 +241,14 @@ correct entries that later prove wrong.
   had simply been missed. Used the same one-line idiom rather than
   `TableContainer`, which contributes nothing but `overflow-x: auto` and would
   have re-indented 60 lines.
+- **2026-10-15, UI contrast and overflow defects fixed.** Measured in the
+  rendered page, not estimated: the TreeSHAP waterfall drew its "Score Boost" /
+  "Risk Penalty" labels in `success.main` (#10B981, **2.54:1**) and
+  `error.main` (#EF4444, **3.76:1**) on white -- both far below the 4.5:1 floor,
+  on the text that carries the legally required explanation. Now #047857 (5.48)
+  and #B91C1C (6.47); the bars keep the bright hues because a graphic has no
+  contrast obligation. Separately, the shared `Navbar` needed ~910px of content
+  and forced a horizontal scrollbar on every page at a 731px viewport; labels
+  now collapse to icons below `sm` (each button keeps an `aria-label`) and the
+  decorative chips drop out below `md`. Page scroll width went 912 -> 731.
+  Note `theme.ts` has no AA-passing green: `success.dark` (#059669) is 3.76:1.
