@@ -212,6 +212,40 @@ host; `OIDC_ISSUER` must match the `iss` the tokens carry exactly. Local logins
 keep working throughout - the two verifiers are consulted in order, and the
 first acceptance wins.
 
+### Delegated sign-in against a real provider (Keycloak)
+
+`cmd/dev-idp` is a fixture: one generated key, no consent screen, no directory.
+To exercise the same verifier against an actual enterprise provider, the stack
+also ships Keycloak - Apache-2.0, self-hosted, no account or tenant required.
+It sits behind a compose profile so the default stack does not pay its startup
+cost.
+
+```bash
+docker compose --profile idp up -d keycloak     # imports realms/credivect on boot
+
+AUTH_MODE=oidc \
+  OIDC_ISSUER=http://localhost:8180/realms/credivect \
+  OIDC_JWKS_URL=http://host.docker.internal:8180/realms/credivect/protocol/openid-connect/certs \
+  OIDC_AUDIENCE=credivect-api \
+  OIDC_ROLE_CLAIM=role \
+  OIDC_ALLOW_CLEARTEXT_KEYS=true \
+  docker compose up -d --force-recreate core
+```
+
+`scripts/keycloak-realm.json` provisions the `credivect-api` client, maps its
+client role onto a `role` claim, and creates four users - an underwriter, an
+admin, a borrower, and one with **no role at all** to prove that a genuine
+identity without authorisation answers 403 rather than 401. Password for all
+four is `credivect-keycloak`.
+
+Two things to know about the issuer. Keycloak derives `iss` from the host in the
+request, so a token minted from a browser on this machine carries
+`http://localhost:8180/realms/credivect` - that exact string is what
+`OIDC_ISSUER` must say, regardless of which URL core uses to fetch the keys.
+And the JWKS path is `/protocol/openid-connect/certs`, not the
+`/.well-known/jwks.json` core assumes when `OIDC_JWKS_URL` is left unset, so
+that one has to be explicit.
+
 ### Golden path to walk by hand
 
 1. `/apply` - submit as a fresh borrower.

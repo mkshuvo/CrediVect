@@ -278,6 +278,40 @@ services:
     ports:
       - "${TEMPORAL_UI_HOST_PORT:-8233}:8080"
 
+  # =========================================================================
+  # 11. KEYCLOAK - a real, self-hosted OIDC provider
+  # =========================================================================
+  # Exercises the delegated-identity path against an actual enterprise provider
+  # rather than cmd/dev-idp, which is a test fixture. Apache-2.0, so it costs
+  # nothing and needs no external account or tenant.
+  #
+  # Held behind a profile because it is the heaviest container here: the demo
+  # stack does not pay its startup cost unless delegated sign-in is wanted.
+  #   docker compose --profile idp up -d keycloak
+  #
+  # Note how the issuer ends up being set. Keycloak derives `iss` from the host
+  # in the request, so a token minted by a browser on this machine carries
+  # http://localhost:8180/realms/credivect -- that exact string is what
+  # OIDC_ISSUER must say, whichever URL core uses to fetch the keys. The
+  # `--issuer` build option does not override it here, which is why it is absent.
+  # The realm is re-imported on every boot, so no volume is needed.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    container_name: credivect-keycloak
+    profiles: ["idp"]
+    command:
+      - start-dev
+      - --import-realm
+      - --hostname-strict=false
+    environment:
+      - KC_BOOTSTRAP_ADMIN_USERNAME=admin
+      - KC_BOOTSTRAP_ADMIN_PASSWORD=credivect-keycloak
+      - KC_HEALTH_ENABLED=true
+    volumes:
+      - ./scripts/keycloak-realm.json:/opt/keycloak/data/import/credivect-realm.json:ro
+    ports:
+      - "${KEYCLOAK_HOST_PORT:-8180}:8080"
+
 volumes:
   postgres_data:
   dragonfly_data:

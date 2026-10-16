@@ -1,0 +1,117 @@
+{
+  "realm": "credivect",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "loginTheme": "keycloak",
+  "accessTokenLifespan": 3600,
+  "ssoSessionIdleTimeout": 3600,
+  "roles": {
+    "realm": [
+      { "name": "offline_access", "description": "Handle offline tokens" },
+      { "name": "uma_authorization", "description": "Access to account management" }
+    ],
+    "client": {
+      "credivect-api": [
+        { "name": "UNDERWRITER", "description": "Staff: sees the full credit file" },
+        { "name": "ADMIN", "description": "Risk admin: may also re-measure drift" },
+        { "name": "BORROWER", "description": "Own cases only" }
+      ]
+    }
+  },
+  "clients": [
+    {
+      "clientId": "credivect-api",
+      "name": "CrediVect core API",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "directAccessGrantsEnabled": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "redirectUris": ["*"],
+      "webOrigins": ["*"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "client.secret.creation.time": ""
+      },
+      "protocolMappers": [
+        {
+          "name": "platform-role",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-client-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "role",
+            "jsonType.label": "String",
+            "multivalued": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "client.role": "true"
+          }
+        },
+        {
+          "name": "credivect-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "credivect-api",
+            "id.token.claim": "true",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "sarah.kc@credivect.example",
+      "email": "sarah.kc@credivect.example",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Sarah",
+      "lastName": "Jenkins",
+      "clientRoles": { "credivect-api": ["UNDERWRITER"] },
+      "credentials": [
+        { "type": "password", "value": "credivect-keycloak", "temporary": false }
+      ]
+    },
+    {
+      "username": "risk.admin.kc@credivect.example",
+      "email": "risk.admin.kc@credivect.example",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Rhea",
+      "lastName": "Okafor",
+      "clientRoles": { "credivect-api": ["ADMIN"] },
+      "credentials": [
+        { "type": "password", "value": "credivect-keycloak", "temporary": false }
+      ]
+    },
+    {
+      "username": "alex.kc@example.com",
+      "email": "alex.kc@example.com",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Alex",
+      "lastName": "Chen",
+      "clientRoles": { "credivect-api": ["BORROWER"] },
+      "credentials": [
+        { "type": "password", "value": "credivect-keycloak", "temporary": false }
+      ]
+    },
+    {
+      "username": "no-role.kc@credivect.example",
+      "email": "no-role.kc@credivect.example",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Nadia",
+      "lastName": "NoRole",
+      "credentials": [
+        { "type": "password", "value": "credivect-keycloak", "temporary": false }
+      ]
+    }
+  ]
+}

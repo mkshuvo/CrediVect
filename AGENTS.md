@@ -241,6 +241,38 @@ correct entries that later prove wrong.
   had simply been missed. Used the same one-line idiom rather than
   `TableContainer`, which contributes nothing but `overflow-x: auto` and would
   have re-indented 60 lines.
+- **2026-10-17, Keycloak wired in as a real OIDC provider and verified.** New
+  profile-gated service (`docker compose --profile idp up -d keycloak`, host
+  port 8180) plus `scripts/keycloak-realm.json`, which provisions the
+  `credivect-api` client, maps its client role to a `role` claim, and creates an
+  underwriter, an admin, a borrower and a deliberately roleless user. Against
+  it, with core in `AUTH_MODE=oidc`: federated underwriter `/auth/me` **200**
+  with `provider: oidc` and a **UUIDv5** account id; staff queue **200**;
+  federated admin drift re-measure **201**; roleless identity **403** ("signed
+  in, but not authorised"); mutated signature **401**; payload swapped to
+  `role: ADMIN` under the original signature **401**; local seeded login still
+  **200** beside the provider. Three things that cost time:
+  `importPending` is not a field on Keycloak 26's `RealmRepresentation` and
+  aborts the whole import with a Jackson error; `--issuer` does **not** pin
+  `iss` (Keycloak derives it from the request host, so use the
+  `localhost:8180` form in `OIDC_ISSUER`); and the certs path is
+  `/protocol/openid-connect/certs`, not the `/.well-known/jwks.json` core
+  defaults to, so `OIDC_JWKS_URL` must be explicit.
+  Note `cmd/e2e` still only speaks to `dev-idp`'s `/token` shape -- Keycloak
+  returns no `id_token` on a password grant, so pointing the 11 OIDC checks at
+  Keycloak needs discovery support in the client first.
+- **2026-10-17, dependency licence audit.** Every Go, Python and npm dependency
+  is MIT/BSD/Apache/ISC; `@img/sharp-libvips-*` is LGPL-3.0 but is an optional
+  dependency; `caniuse-lite` is CC-BY-4.0. **Redpanda, Redpanda Console and
+  Dragonfly are BUSL-1.1**, not OSI -- but their Additional Use Grants cover
+  self-hosting this as an internal underwriting demo (the restriction is on
+  offering a competing streaming/in-memory-store service to third parties), and
+  both age into Apache-2.0 around 2030. Two real findings instead: **the repo
+  has no LICENSE file at all** (verified: none anywhere, README never mentions
+  one, GitHub's licence field is empty), so the owner's own code is
+  unredistributable; and **Docker Desktop on Windows** is the only genuine
+  billing exposure, since its free grant depends on employer size -- WSL2
+  Docker Engine or Podman remove it.
 - **2026-10-15, UI contrast and overflow defects fixed.** Measured in the
   rendered page, not estimated: the TreeSHAP waterfall drew its "Score Boost" /
   "Risk Penalty" labels in `success.main` (#10B981, **2.54:1**) and
