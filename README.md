@@ -716,3 +716,20 @@ PLAN.md                    Original technical specification
 `docs/README.md` indexes the specification documents. `docs/00_final_implementation_plan.md`
 and `PLAN.md` overlap - the former is the longer-form plan, the latter the
 original architecture brief.
+
+---
+
+## License
+
+Released under the **Apache License, Version 2.0** - see [LICENSE](LICENSE).
+Copyright 2026 Mohsin Khan Shuvo.
+
+Chosen deliberately over the alternatives, because the whole stack is built to
+cost nothing: Apache-2.0 is the same licence Keycloak ships under, it carries an
+explicit patent grant that MIT does not, and it keeps the project usable without
+a licence conversation. Every dependency is permissive - MIT, BSD, Apache-2.0 or
+ISC - except Redpanda, Redpanda Console and Dragonfly, which are BUSL-1.1: free
+to self-host for this kind of internal use, with the restriction landing on
+offering them as a competing managed service, and both converting to Apache-2.0
+around 2030. Substituting Apache Kafka or Valkey removes even that, and neither
+swap needs a code change here.
